@@ -1,4 +1,3 @@
-
 # final_trading_terminal_single_file.py
 # Single-file Streamlit trading terminal
 # Features:
@@ -22,7 +21,7 @@ import uuid
 # ----- CONFIG -----
 FIXED_ALLOCATION = 1000.0  # $1000 per trade
 SIGNAL_REFRESH_SECONDS = 120  # 2 minutes for signals
-PRICE_REFRESH_SECONDS = 30  # fast refresh for live prices
+PRICE_REFRESH_SECONDS = 15  # fast refresh for live prices
 
 # Market coverage
 MARKETS = {
@@ -48,6 +47,15 @@ st.markdown(
     .stTabs [data-baseweb="tab-list"] { gap: 6px; padding: 6px; border-radius: 10px; }
     .stTabs [data-baseweb="tab"] { background: linear-gradient(90deg,#667eea,#764ba2); border-radius: 8px; color: white; padding: 8px 12px; font-weight:700; }
     .stTabs [aria-selected="true"] { background: linear-gradient(90deg,#FF6B6B,#4ECDC4) !important; color: white !important; }
+    /* Auto-refresh counter */
+    .refresh-counter {
+        background: #1e3a8a;
+        color: white;
+        padding: 4px 8px;
+        border-radius: 12px;
+        font-size: 12px;
+        margin-left: 8px;
+    }
     </style>
     """, unsafe_allow_html=True
 )
@@ -71,6 +79,34 @@ if "balance" not in st.session_state:
     st.session_state.balance = 20000.0  # demo starting balance
 if "last_prices" not in st.session_state:
     st.session_state.last_prices = {}
+if "refresh_count" not in st.session_state:
+    st.session_state.refresh_count = 0
+if "current_tab" not in st.session_state:
+    st.session_state.current_tab = "Live Dashboard"
+
+# ----- Enhanced Auto-Refresh Strategy -----
+def setup_auto_refresh():
+    """Enhanced auto-refresh strategy with manual override"""
+    st.session_state.refresh_count += 1
+    
+    # Display refresh counter
+    st.markdown(f"<div style='text-align: left; color: #6b7280; font-size: 14px;'>Refresh Count: <span class='refresh-counter'>{st.session_state.refresh_count}</span></div>", unsafe_allow_html=True)
+    
+    # Manual refresh controls
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button("🔄 Manual Refresh", use_container_width=True):
+            st.rerun()
+    with col2:
+        if st.button("📊 Update Prices", use_container_width=True):
+            st.rerun()
+    
+    # Auto-refresh logic
+    now = time.time()
+    signal_refresh_needed = (now - st.session_state.last_signal_refresh) >= SIGNAL_REFRESH_SECONDS
+    price_refresh_needed = (now - st.session_state.last_price_refresh) >= PRICE_REFRESH_SECONDS
+    
+    return signal_refresh_needed, price_refresh_needed, now
 
 # ----- Helpers -----
 def fetch_latest_close(symbol: str, period: str = "7d", interval: str = "15m"):
@@ -199,6 +235,9 @@ def execute_paper_trade(signal: dict):
     st.session_state.executed_signal_ids.add(sig_id)
     return trade
 
+# ----- Setup Auto-Refresh -----
+signal_refresh_needed, price_refresh_needed, current_time = setup_auto_refresh()
+
 # ----- Sidebar -----
 st.sidebar.header("Configuration")
 market_choice = st.sidebar.selectbox("Market", list(MARKETS.keys()), index=0)
@@ -214,10 +253,6 @@ st.sidebar.write("Fixed allocation per trade: $%d" % FIXED_ALLOCATION)
 st.sidebar.metric("Balance (demo)", f"${st.session_state.balance:,.2f}")
 
 # ----- Generate / Refresh Signals -----
-now = time.time()
-signal_refresh_needed = (now - st.session_state.last_signal_refresh) >= SIGNAL_REFRESH_SECONDS
-price_refresh_needed = (now - st.session_state.last_price_refresh) >= PRICE_REFRESH_SECONDS
-
 # Price refresh path (do not rerun the whole app to update prices frequently)
 if price_refresh_needed:
     # Update last prices cache for dashboard view
@@ -225,7 +260,7 @@ if price_refresh_needed:
         price, _ = fetch_latest_close(sym, period="7d", interval="15m")
         if price is not None:
             st.session_state.last_prices[sym] = price
-    st.session_state.last_price_refresh = now
+    st.session_state.last_price_refresh = current_time
 
 # Signals refresh path (every 2 minutes or when manually requested)
 manual_refresh = st.sidebar.button("Refresh Signals Now")
@@ -257,6 +292,7 @@ tab1, tab2, tab3 = st.tabs(["Live Dashboard", "Signals", "Paper Trading"])
 
 # ----- TAB 1: Live Dashboard -----
 with tab1:
+    st.session_state.current_tab = "Live Dashboard"
     st.subheader("Live Dashboard — Prices & Mood")
     # Top metrics
     col1, col2, col3, col4 = st.columns(4)
@@ -284,6 +320,7 @@ with tab1:
 
 # ----- TAB 2: Signals -----
 with tab2:
+    st.session_state.current_tab = "Signals"
     st.subheader("Trading Signals (auto-updates every 2 minutes)")
     if not st.session_state.signals:
         st.info("No signals generated yet. Click 'Refresh Signals Now' or enable auto-refresh.")
@@ -327,6 +364,7 @@ with tab2:
 
 # ----- TAB 3: Paper Trading -----
 with tab3:
+    st.session_state.current_tab = "Paper Trading"
     st.subheader("Paper Trading Dashboard")
     st.markdown(f"**Balance:** ${st.session_state.balance:,.2f}  •  **Allocated per open trade:** ${FIXED_ALLOCATION:,.2f}")
     if st.session_state.paper_trades:
@@ -339,3 +377,28 @@ with tab3:
 st.markdown("---")
 st.markdown(f"<div class='small'>Last signal refresh: {datetime.fromtimestamp(st.session_state.last_signal_refresh) if st.session_state.last_signal_refresh>0 else 'Never'}</div>", unsafe_allow_html=True)
 st.markdown(f"<div class='small'>Last price refresh: {datetime.fromtimestamp(st.session_state.last_price_refresh) if st.session_state.last_price_refresh>0 else 'Never'}</div>", unsafe_allow_html=True)
+
+# ----- Auto-refresh JavaScript (enhanced) -----
+if auto_refresh_signals:
+    # Only auto-refresh if we're on the signals tab or dashboard
+    if st.session_state.current_tab in ["Live Dashboard", "Signals"]:
+        refresh_seconds = SIGNAL_REFRESH_SECONDS
+        # Show countdown
+        time_since_refresh = time.time() - st.session_state.last_signal_refresh
+        time_remaining = max(0, refresh_seconds - time_since_refresh)
+        
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #FF6B6B, #4ECDC4); color: white; padding: 10px; border-radius: 10px; text-align: center; margin: 10px 0;">
+            🔄 AUTO-REFRESH ACTIVE | Next update in {int(time_remaining)} seconds
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Auto-refresh using JavaScript
+        if signal_refresh_needed:
+            st.markdown("""
+            <script>
+            setTimeout(function() {
+                window.location.reload();
+            }, 1000);
+            </script>
+            """, unsafe_allow_html=True)
