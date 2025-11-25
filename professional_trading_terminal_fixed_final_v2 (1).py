@@ -308,7 +308,7 @@ with tab2:
                         trade = execute_paper_trade(available[0])
                         if trade:
                             st.success(f"Executed trade {trade['id']} for {trade['symbol']}")
-                            st.experimental_rerun()
+                            st.rerun()
                         else:
                             st.error("Could not execute trade (maybe allocation too small).")
             # Auto-execute logic
@@ -323,7 +323,7 @@ with tab2:
                             executed_count += 1
                 if executed_count>0:
                     st.success(f"Auto-executed {executed_count} trades (fixed ${FIXED_ALLOCATION} allocation each).")
-                    st.experimental_rerun()
+                    st.rerun()
 
 # ----- TAB 3: Paper Trading -----
 with tab3:
