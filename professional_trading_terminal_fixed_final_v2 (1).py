@@ -19,6 +19,9 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from collections import deque
 
+SIGNAL_REFRESH_MS = 90000
+PRICE_REFRESH_MS = 25000
+
 warnings.filterwarnings("ignore")
 
 # --- Constants / Config ---
