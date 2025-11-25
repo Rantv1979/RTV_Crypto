@@ -1,972 +1,1781 @@
-# professional_trading_terminal_fixed_final_v4.py
-"""
-Updated Trading Terminal
-- UI auto-refresh every 15s
-- Signal generation every 30s (separate timer)
-- Prevent duplicate signals across recent generations
-- Auto-execute trades for newly generated signals (respecting max positions)
-- Execution timestamps included in trade_log (timestamp field)
-"""
+# multi_timeframe_crypto_forex_trading_terminal.py
 import streamlit as st
-import yfinance as yf
 import pandas as pd
-import numpy as np
+import plotly.graph_objects as go
+import plotly.express as px
 from datetime import datetime, timedelta
 import time
+import numpy as np
+from dataclasses import dataclass
+from typing import List, Dict, Optional, Tuple
 import warnings
-from typing import Optional
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from collections import deque
+warnings.filterwarnings('ignore')
+import yfinance as yf
+from scipy import stats
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import StandardScaler
+import joblib
+import requests
+from textblob import TextBlob
+import re
+import json
+from enum import Enum
+import os
+import tempfile
 
 SIGNAL_REFRESH_MS = 90000
 PRICE_REFRESH_MS = 25000
 
-warnings.filterwarnings("ignore")
+# Enhanced Trading Signal Data Class
+@dataclass
+class TradingSignal:
+    symbol: str
+    action: str  # "BUY" or "SELL"
+    strategy: str
+    timeframe: str
+    entry: float
+    stop_loss: float
+    target1: float
+    target2: float
+    target3: float
+    confidence: float
+    risk_reward: float
+    timestamp: datetime
+    reasoning: str = ""
+    priority: str = "MEDIUM"  # LOW, MEDIUM, HIGH
+    executed: bool = False
+    trade_id: Optional[str] = None
+    result: Optional[str] = None  # "WIN", "LOSS", "OPEN"
 
-# --- Constants / Config ---
-REFRESH_INTERVAL = 15  # seconds (UI auto-refresh)
-SIGNAL_GEN_INTERVAL = 30  # seconds (signal generation frequency)
-CHART_INTERVALS = ["1m", "5m", "15m", "1h", "1d"]
-DEFAULT_CHART_INTERVAL = "5m"
-SCAN_INTERVALS = ["5m", "15m"]  # include scalping 15m
-MIN_TRADE_CONFIDENCE = 0.75
-MAX_CONCURRENT_POSITIONS = 10
-RECENT_SIGNAL_TTL = 300  # seconds to keep recent signals IDs to avoid duplicates
-
-PROFESSIONAL_SYMBOLS = {
-    "EURUSD=X": "EUR/USD", "GBPUSD=X": "GBP/USD", "USDJPY=X": "USD/JPY",
-    "AUDUSD=X": "AUD/USD", "USDCAD=X": "USD/CAD", "USDCHF=X": "USD/CHF",
-    "NZDUSD=X": "NZD/USD", "EURGBP=X": "EUR/GBP", "EURJPY=X": "EUR/JPY",
-    "GBPJPY=X": "GBP/JPY",
-    "BTC-USD": "Bitcoin", "ETH-USD": "Ethereum", "ADA-USD": "Cardano",
-    "DOT-USD": "Polkadot", "LINK-USD": "Chainlink", "SOL-USD": "Solana",
-    "XRP-USD": "Ripple", "AVAX-USD": "Avalanche",
-    "GC=F": "Gold", "SI=F": "Silver", "CL=F": "Crude Oil",
-    "^GSPC": "S&P 500", "^DJI": "Dow Jones", "^IXIC": "NASDAQ"
-}
-
-# -------------------------
-# Session state init
-# -------------------------
-if 'initialized' not in st.session_state:
-    st.session_state.initialized = True
-    st.session_state.last_refresh = datetime.now()
-    st.session_state.last_signal_gen = datetime.now() - timedelta(seconds=SIGNAL_GEN_INTERVAL)
-    st.session_state.last_trade_time = 0
-    st.session_state.trade_log = []
-    st.session_state.signals = {}
-    st.session_state.force_refresh = False
-    st.session_state.chart_symbol = "BTC-USD"
-    st.session_state.chart_interval = DEFAULT_CHART_INTERVAL
-    st.session_state.refresh_count = 0
-    st.session_state.auto_trade_enabled = True # Enabled auto-trade by default
-    st.session_state.auto_trade_config = {'trade_amount': 1000.0, 'max_positions': 5}
-    st.session_state.paper_trading = {
-        'balance': 50000.0,
-        'positions': {},
-        'trade_history': [],
-        'unrealized_pnl': 0.0,
-        'realized_pnl': 0.0,
-        'total_trades': 0,
-        'winning_trades': 0
-    }
-    # recent_signal_ids: deque of tuples (signal_id, timestamp) to prevent duplicates
-    st.session_state.recent_signal_ids = deque()
-    # executed_signals: map signal_id -> timestamp when auto-executed
-    st.session_state.executed_signals = {}
-
-# -------------------------
-# Cached top-level data helpers (no 'self' arg)
-# -------------------------
-@st.cache_data(ttl=6, show_spinner=False)
-def _cached_get_live_chart_data(symbol: str, interval: str) -> pd.DataFrame:
-    try:
-        period_map = {"1m": "1d", "5m": "1d", "15m": "5d", "1h": "1mo", "1d": "3mo"}
-        period = period_map.get(interval, "1d")
-        ticker = yf.Ticker(symbol)
-        df = ticker.history(period=period, interval=interval, auto_adjust=False, actions=False, rounding=True)
-        if df.empty:
-            return pd.DataFrame()
-        df.index = df.index.tz_localize(None) if getattr(df.index, 'tz', None) is not None else df.index
-        return df
-    except Exception:
-        return pd.DataFrame()
-
-@st.cache_data(ttl=4, show_spinner=False)
-def _cached_get_current_price(symbol: str) -> Optional[float]:
-    try:
-        ticker = yf.Ticker(symbol)
-        hist = ticker.history(period="1d", interval="1m", actions=False)
-        if not hist.empty:
-            return float(hist['Close'].iloc[-1])
-        info = getattr(ticker, 'info', {}) or {}
-        for k in ('regularMarketPrice', 'currentPrice', 'ask', 'bid', 'previousClose'):
-            if k in info and info[k] is not None:
-                return float(info[k])
-    except Exception:
-        pass
-    return None
-
-@st.cache_data(ttl=10, show_spinner=False)
-def _cached_get_trading_data(symbol: str, period: str = "2d", interval: str = "5m") -> pd.DataFrame:
-    try:
-        ticker = yf.Ticker(symbol)
-        df = ticker.history(period=period, interval=interval, auto_adjust=False, actions=False, rounding=True)
-        if df.empty:
-            return pd.DataFrame()
-        df.index = df.index.tz_localize(None) if getattr(df.index, 'tz', None) is not None else df.index
-        return df
-    except Exception:
-        return pd.DataFrame()
-
-@st.cache_data(ttl=600, show_spinner=False)
-def _cached_get_day_change(symbol: str) -> Optional[float]:
-    try:
-        ticker = yf.Ticker(symbol)
-        prev = ticker.history(period='3d', interval='1d')
-        if not prev.empty and len(prev) > 1:
-            prev_close = prev['Close'].iloc[-2]
-            current_close = prev['Close'].iloc[-1]
-            return ((current_close - prev_close) / prev_close) * 100 if prev_close != 0 else 0.0
-    except Exception:
-        pass
-    return None
-
-# -------------------------
-# TA helpers
-# -------------------------
-class TechnicalAnalysis:
-    @staticmethod
-    def sma(series: pd.Series, window: int) -> pd.Series:
-        return series.rolling(window=window).mean()
-    @staticmethod
-    def ema(series: pd.Series, window: int) -> pd.Series:
-        return series.ewm(span=window, adjust=False).mean()
-    @staticmethod
-    def rsi(series: pd.Series, window: int = 14) -> pd.Series:
-        delta = series.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-        rs = gain / loss.replace(0, np.nan)
-        rsi = 100 - (100 / (1 + rs))
-        return rsi.fillna(50)
-    @staticmethod
-    def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
-        ema_fast = series.ewm(span=fast, adjust=False).mean()
-        ema_slow = series.ewm(span=slow, adjust=False).mean()
-        macd_line = ema_fast - ema_slow
-        signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-        histogram = macd_line - signal_line
-        return macd_line, signal_line, histogram
-    @staticmethod
-    def bollinger_bands(series: pd.Series, window: int = 20, num_std: int = 2):
-        sma = series.rolling(window=window).mean()
-        std = series.rolling(window=window).std()
-        upper = sma + (std * num_std)
-        lower = sma - (std * num_std)
-        return upper, sma, lower
-    @staticmethod
-    def atr(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14) -> pd.Series:
-        tr1 = high - low
-        tr2 = (high - close.shift()).abs()
-        tr3 = (low - close.shift()).abs()
-        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        return tr.ewm(span=window, adjust=False).mean().fillna(method='bfill')
-    @staticmethod
-    def stochastic(high: pd.Series, low: pd.Series, close: pd.Series, k_window: int = 14, d_window: int = 3):
-        lowest_low = low.rolling(window=k_window).min()
-        highest_high = high.rolling(window=k_window).max()
-        denom = (highest_high - lowest_low).replace(0, np.nan)
-        k = ((close - lowest_low) / denom) * 100
-        d = k.rolling(window=d_window).mean()
-        return k.fillna(50), d.fillna(50)
-    @staticmethod
-    def calculate_support_resistance(df: pd.DataFrame, window: int = 20):
-        if df.empty:
-            return pd.Series(), pd.Series()
-        df = df.copy()
-        df['Resistance'] = df['High'].rolling(window=window, center=True).max().shift(-1)
-        df['Support'] = df['Low'].rolling(window=window, center=True).min().shift(-1)
-        df['Resistance'] = df['Resistance'].fillna(method='bfill').fillna(method='ffill')
-        df['Support'] = df['Support'].fillna(method='bfill').fillna(method='ffill')
-        return df['Support'], df['Resistance']
-
-# -------------------------
-# Data manager (calls cached helpers)
-# -------------------------
-class ProfessionalDataManager:
+# Signal History Manager
+class SignalHistoryManager:
     def __init__(self):
-        self.symbols = PROFESSIONAL_SYMBOLS
-        self.ta = TechnicalAnalysis()
-    def get_live_chart_data(self, symbol: str, interval: str = "5m") -> pd.DataFrame:
-        return _cached_get_live_chart_data(symbol, interval)
-    def get_current_price(self, symbol: str) -> Optional[float]:
-        return _cached_get_current_price(symbol)
-    def get_day_change_percent(self, symbol: str) -> Optional[float]:
-        return _cached_get_day_change(symbol)
-    def get_trading_data(self, symbol: str, period: str = "2d", interval: str = "5m") -> pd.DataFrame:
-        return _cached_get_trading_data(symbol, period, interval)
-    def calculate_pro_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        if df.empty:
-            return df
-        df = df.copy()
-        df['SMA_20'] = self.ta.sma(df['Close'], 20)
-        df['SMA_50'] = self.ta.sma(df['Close'], 50)
-        df['EMA_12'] = self.ta.ema(df['Close'], 12)
-        df['EMA_26'] = self.ta.ema(df['Close'], 26)
-        bb_upper, bb_middle, bb_lower = self.ta.bollinger_bands(df['Close'], 20, 2)
-        df['BB_Upper'] = bb_upper
-        df['BB_Lower'] = bb_lower
-        df['BB_Middle'] = bb_middle
-        df['RSI'] = self.ta.rsi(df['Close'], 14)
-        macd, signal, hist = self.ta.macd(df['Close'], 12, 26, 9)
-        df['MACD'] = macd
-        df['MACD_Signal'] = signal
-        df['MACD_Histogram'] = hist
-        stoch_k, stoch_d = self.ta.stochastic(df['High'], df['Low'], df['Close'], 14, 3)
-        df['Stoch_K'] = stoch_k
-        df['Stoch_D'] = stoch_d
-        df['Volume_SMA'] = df['Volume'].rolling(20).mean().fillna(method='bfill')
-        df['Volume_Ratio'] = (df['Volume'] / (df['Volume_SMA'].replace(0, np.nan))).fillna(1.0)
-        df['ATR'] = self.ta.atr(df['High'], df['Low'], df['Close'], 14)
-        typical = (df['High'] + df['Low'] + df['Close']) / 3
-        vol_cumsum = df['Volume'].cumsum().replace(0, np.nan)
-        df['VWAP'] = (typical * df['Volume']).cumsum() / vol_cumsum
-        df['Support'], df['Resistance'] = self.ta.calculate_support_resistance(df, 20)
-        return df
-
-# -------------------------
-# Signals & Paper Trading
-# -------------------------
-class ProfessionalSignal:
-    def __init__(self, symbol: str, action: str, strategy: str, timeframe: str,
-                 entry: float, stop_loss: float, take_profit: float,
-                 confidence: float, volume: float, indicators: dict,
-                 support: float = None, resistance: float = None):
-        self.symbol = symbol
-        self.action = action
-        self.strategy = strategy
-        self.timeframe = timeframe
-        self.entry = entry
-        self.stop_loss = stop_loss
-        self.take_profit = take_profit
-        self.confidence = confidence
-        self.volume = volume
-        self.indicators = indicators
-        self.support = support
-        self.resistance = resistance
-        self.timestamp = datetime.now()
-    def id(self):
-        # Unique deterministic id for deduplication: symbol|strategy|timeframe|rounded_entry
-        return f"{self.symbol}|{self.strategy}|{self.timeframe}|{round(self.entry, 6)}"
-
-class PaperTradingEngine:
-    MARGIN_RATE = 0.20
-    COMMISSION_RATE = 0.001
-    def __init__(self, initial_balance: float = 50000.0):
-        self.initial_balance = initial_balance
-    def ensure(self):
-        if 'paper_trading' not in st.session_state:
-            self.reset()
-    def reset(self):
-        st.session_state.paper_trading = {
-            'balance': self.initial_balance,
-            'positions': {},
-            'trade_history': [],
-            'unrealized_pnl': 0.0,
-            'realized_pnl': 0.0,
-            'total_trades': 0,
-            'winning_trades': 0
-        }
-        st.session_state.trade_log = []
-    def get_balance(self) -> float:
-        self.ensure()
-        return st.session_state.paper_trading['balance']
-    def get_positions(self) -> dict:
-        self.ensure()
-        return st.session_state.paper_trading['positions']
-    def portfolio_value(self) -> float:
-        self.ensure()
-        cash = st.session_state.paper_trading['balance']
-        positions_value = 0.0
-        for pos in st.session_state.paper_trading['positions'].values():
-            side = pos['side']
-            quantity = pos['quantity']
-            current = pos.get('current_price', pos['entry_price'])
-            if side == 'LONG':
-                positions_value += quantity * current
-            else:
-                positions_value += pos.get('margin_locked', 0.0) + pos.get('unrealized_pnl', 0.0)
-        return cash + positions_value
-    def place_trade(self, symbol: str, action: str, quantity: float, price: float, signal: ProfessionalSignal = None) -> bool:
-        self.ensure()
-        action = action.upper()
-        if quantity <= 0 or price <= 0:
-            return False
-        commission = quantity * price * self.COMMISSION_RATE
-        is_long_side = symbol in st.session_state.paper_trading['positions'] and st.session_state.paper_trading['positions'][symbol]['side'] == 'LONG'
-        is_short_side = symbol in st.session_state.paper_trading['positions'] and st.session_state.paper_trading['positions'][symbol]['side'] == 'SHORT'
-        if action == "BUY":
-            cost = quantity * price
-            total_cost = cost + commission
-            if st.session_state.paper_trading['balance'] >= total_cost:
-                st.session_state.paper_trading['balance'] -= total_cost
-                if is_long_side:
-                    existing = st.session_state.paper_trading['positions'][symbol]
-                    total_qty = existing['quantity'] + quantity
-                    total_cost_basis = (existing['entry_price'] * existing['quantity']) + (price * quantity)
-                    avg_price = total_cost_basis / total_qty
-                    existing.update({
-                        'quantity': total_qty,
-                        'entry_price': avg_price,
-                        'current_price': price,
-                        'entry_time': existing['entry_time']
-                    })
-                else:
-                    st.session_state.paper_trading['positions'][symbol] = {
-                        'side': 'LONG',
-                        'quantity': quantity,
-                        'entry_price': price,
-                        'current_price': price,
-                        'entry_time': datetime.now(),
-                        'signal': signal,
-                        'cost_basis': price
-                    }
-                entry = datetime.now()
-                st.session_state.trade_log.append({
-                    'timestamp': entry,
-                    'execution_time': entry,
-                    'symbol': symbol,
-                    'action': 'BUY' if not is_long_side else 'BUY_ADD',
-                    'quantity': quantity,
-                    'price': price,
-                    'commission': commission,
-                    'signal': signal.strategy if signal else 'Manual'
-                })
-                st.session_state.paper_trading['total_trades'] += 1
-                return True
-            return False
-        elif action == "SELL":
-            notional = quantity * price
-            margin_required = notional * self.MARGIN_RATE
-            total_required = margin_required + commission
-            if st.session_state.paper_trading['balance'] >= total_required:
-                st.session_state.paper_trading['balance'] -= total_required
-                if is_short_side:
-                    existing = st.session_state.paper_trading['positions'][symbol]
-                    total_qty = existing['quantity'] + quantity
-                    total_notional = existing['entry_price'] * existing['quantity'] + price * quantity
-                    avg_entry = total_notional / total_qty
-                    existing.update({
-                        'quantity': total_qty,
-                        'entry_price': avg_entry,
-                        'current_price': price,
-                        'margin_locked': existing.get('margin_locked', 0.0) + margin_required,
-                        'entry_time': existing['entry_time']
-                    })
-                else:
-                    st.session_state.paper_trading['positions'][symbol] = {
-                        'side': 'SHORT',
-                        'quantity': quantity,
-                        'entry_price': price,
-                        'current_price': price,
-                        'margin_locked': margin_required,
-                        'entry_time': datetime.now(),
-                        'signal': signal
-                    }
-                entry = datetime.now()
-                st.session_state.trade_log.append({
-                    'timestamp': entry,
-                    'execution_time': entry,
-                    'symbol': symbol,
-                    'action': 'SELL_OPEN' if not is_short_side else 'SELL_ADD',
-                    'quantity': quantity,
-                    'price': price,
-                    'commission': commission,
-                    'margin_locked': margin_required,
-                    'signal': signal.strategy if signal else 'Manual'
-                })
-                st.session_state.paper_trading['total_trades'] += 1
-                return True
-            return False
-        return False
-    def close_position(self, symbol: str, price: float, reason: str, quantity: Optional[float] = None) -> bool:
-        self.ensure()
-        if symbol not in st.session_state.paper_trading['positions']:
-            return False
-        pos = st.session_state.paper_trading['positions'][symbol]
-        side = pos['side']
-        if quantity is None:
-            quantity = pos['quantity']
-        if quantity <= 0 or quantity > pos['quantity']:
-            return False
-        commission = quantity * price * self.COMMISSION_RATE
-        if side == 'LONG':
-            proceeds = quantity * price
-            pnl = (price - pos['entry_price']) * quantity - commission
-            st.session_state.paper_trading['balance'] += (proceeds - commission)
-            st.session_state.paper_trading['realized_pnl'] += pnl
-            if pnl > 0:
-                st.session_state.paper_trading['winning_trades'] += 1
-            pos['quantity'] -= quantity
-            if pos['quantity'] <= 0:
-                del st.session_state.paper_trading['positions'][symbol]
-            else:
-                pos['current_price'] = price
-            entry = datetime.now()
-            st.session_state.trade_log.append({
-                'timestamp': entry,
-                'execution_time': entry,
-                'symbol': symbol,
-                'action': f'CLOSE_LONG ({reason})',
-                'quantity': quantity,
-                'price': price,
-                'pnl': pnl,
-                'commission': commission
-            })
-            return True
-        else:
-            cost_to_buy = quantity * price
-            pnl = (pos['entry_price'] - price) * quantity - commission
-            margin_locked = pos.get('margin_locked', 0.0)
-            locked_release = 0.0
-            if pos['quantity'] > 0:
-                locked_release = margin_locked * (quantity / pos['quantity'])
-            st.session_state.paper_trading['balance'] += locked_release + pnl
-            st.session_state.paper_trading['realized_pnl'] += pnl
-            if pnl > 0:
-                st.session_state.paper_trading['winning_trades'] += 1
-            pos['quantity'] -= quantity
-            if pos['quantity'] <= 0:
-                del st.session_state.paper_trading['positions'][symbol]
-            else:
-                pos['margin_locked'] -= locked_release
-                pos['current_price'] = price
-            entry = datetime.now()
-            st.session_state.trade_log.append({
-                'timestamp': entry,
-                'execution_time': entry,
-                'symbol': symbol,
-                'action': f'CLOSE_SHORT ({reason})',
-                'quantity': quantity,
-                'price': price,
-                'pnl': pnl,
-                'commission': commission,
-                'released_margin': locked_release
-            })
-            return True
-    def update_positions(self, dm: ProfessionalDataManager):
-        self.ensure()
-        unrealized_pnl = 0.0
-        to_close = []
-        for symbol, pos in list(st.session_state.paper_trading['positions'].items()):
-            current_price = dm.get_current_price(symbol)
-            if not current_price:
-                continue
-            pos['current_price'] = current_price
-            if pos['side'] == 'LONG':
-                pnl = (current_price - pos['entry_price']) * pos['quantity']
-                unrealized_pnl += pnl
-                pos['unrealized_pnl'] = pnl
-                signal = pos.get('signal')
-                if signal:
-                    if current_price <= signal.stop_loss:
-                        to_close.append((symbol, current_price, "SL Hit"))
-                    elif current_price >= signal.take_profit:
-                        to_close.append((symbol, current_price, "TP Hit"))
-            else:
-                pnl = (pos['entry_price'] - current_price) * pos['quantity']
-                unrealized_pnl += pnl
-                pos['unrealized_pnl'] = pnl
-                signal = pos.get('signal')
-                if signal:
-                    if current_price >= signal.stop_loss:
-                        to_close.append((symbol, current_price, "SL Hit"))
-                    elif current_price <= signal.take_profit:
-                        to_close.append((symbol, current_price, "TP Hit"))
-            if (datetime.now() - pos['entry_time']).total_seconds() > 86400 * 3:
-                to_close.append((symbol, current_price, "Time Exit"))
-        for symbol, price, reason in to_close:
-            try:
-                self.close_position(symbol, price, reason)
-            except Exception:
-                pass 
-        st.session_state.paper_trading['unrealized_pnl'] = unrealized_pnl
-
-# -------------------------
-# Trading Terminal
-# -------------------------
-class ProfessionalTradingTerminal:
-    def __init__(self):
-        self.dm = ProfessionalDataManager()
-        self.pt = PaperTradingEngine()
-        if 'trading_engine' not in st.session_state:
-            st.session_state.trading_engine = {'active_positions': 0, 'daily_pnl': 0.0, 'today_trades': 0, 'signals_generated': 0}
-    def _cleanup_recent_signals(self):
-        """Remove old entries from recent_signal_ids based on TTL"""
-        now = datetime.now()
-        while st.session_state.recent_signal_ids and (now - st.session_state.recent_signal_ids[0][1]).total_seconds() > RECENT_SIGNAL_TTL:
-            st.session_state.recent_signal_ids.popleft()
-    # ---------- Auto-refresh implementation ----------
-    def check_auto_refresh(self):
-        current_time = datetime.now()
-        time_since_refresh = (current_time - st.session_state.last_refresh).total_seconds()
-        if time_since_refresh >= REFRESH_INTERVAL:
-            st.session_state.last_refresh = current_time
-            st.session_state.refresh_count += 1
-            # UI refresh occurs; but signal generation/execution controlled separately
-            # Check if it's time to generate signals (every SIGNAL_GEN_INTERVAL)
-            time_since_sig = (current_time - st.session_state.last_signal_gen).total_seconds()
-            if time_since_sig >= SIGNAL_GEN_INTERVAL:
-                st.session_state.last_signal_gen = current_time
-                # Generate signals (this function will deduplicate)
-                new_count = self.generate_all_signals()
-                # Auto-trade newly generated signals if enabled
-                if st.session_state.auto_trade_enabled and new_count > 0:
-                    cfg = st.session_state.auto_trade_config
-                    self.execute_auto_trading(cfg.get('trade_amount', 1000.0), cfg.get('max_positions', 5))
-            # Force UI refresh
-            st.experimental_rerun()
-    def generate_all_signals(self):
-        """Generate signals for all symbols and timeframes; avoid duplicates using recent_signal_ids"""
-        all_signals = []
-        scan_symbols = ["EURUSD=X", "BTC-USD", "ETH-USD", "GC=F", "^GSPC"]
-        for symbol in scan_symbols:
-            for timeframe in SCAN_INTERVALS:
-                signals = self.run_pro_strategies(symbol, timeframe)
-                all_signals.extend(signals)
-        confirmed = [sig for sig in all_signals if sig.confidence >= MIN_TRADE_CONFIDENCE]
-        confirmed.sort(key=lambda x: x.confidence, reverse=True)
-        # Deduplicate against recent_signal_ids
-        self._cleanup_recent_signals()
-        recent_ids = {sid for sid, ts in st.session_state.recent_signal_ids}
-        new_signals = []
-        for sig in confirmed[:80]:
-            sid = sig.id()
-            if sid not in recent_ids:
-                new_signals.append(sig)
-                st.session_state.recent_signal_ids.append((sid, datetime.now()))
-        # Update session signals to include the latest (replace old list)
-        st.session_state.signals = {f"{sig.symbol}_{sig.strategy}_{sig.timeframe}_{round(sig.entry,6)}": sig for sig in confirmed[:80]}
-        st.session_state.trading_engine['signals_generated'] = len(confirmed)
-        return len(new_signals)
-    # ---------- Strategies (same as before, omitted here for brevity) ----------
-    def strategy_trend_following(self, symbol: str, df: pd.DataFrame, timeframe: str):
-        signals = []
-        if len(df) < 50:
-            return signals
-        try:
-            current = df['Close'].iloc[-1]
-            sma_20 = df['SMA_20'].iloc[-1]
-            sma_50 = df['SMA_50'].iloc[-1]
-            ema_12 = df['EMA_12'].iloc[-1]
-            ema_26 = df['EMA_26'].iloc[-1]
-            atr = float(df['ATR'].iloc[-1]) if not pd.isna(df['ATR'].iloc[-1]) else max(0.0001, current * 0.01)
-            volume_ratio = float(df['Volume_Ratio'].iloc[-1]) if not pd.isna(df['Volume_Ratio'].iloc[-1]) else 1.0
-            rsi = df['RSI'].iloc[-1] if not pd.isna(df['RSI'].iloc[-1]) else 50
-            support = df['Support'].iloc[-1] if not pd.isna(df['Support'].iloc[-1]) else current * 0.98
-            resistance = df['Resistance'].iloc[-1] if not pd.isna(df['Resistance'].iloc[-1]) else current * 1.02
-            bullish_trend = (current > ema_12 > ema_26 > sma_20 > sma_50)
-            momentum_confirmation = (df['MACD'].iloc[-1] > df['MACD_Signal'].iloc[-1])
-            if bullish_trend and momentum_confirmation and rsi < 70:
-                stop_loss = min(current - 2 * atr, support)
-                risk = current - stop_loss
-                take_profit = current + 3 * risk
-                confidence = 0.82
-                if volume_ratio > 1.5:
-                    confidence += 0.08
-                if timeframe == "15m":
-                    confidence += 0.05
-                if rsi < 60:
-                    confidence += 0.05
-                signals.append(ProfessionalSignal(symbol, "BUY", f"Trend_Following_{timeframe}", timeframe,
-                                                  current, stop_loss, take_profit, confidence, float(df['Volume'].iloc[-1]),
-                                                  {'RSI': rsi, 'MACD': df['MACD'].iloc[-1]}, support, resistance))
-            bearish_trend = (current < ema_12 < ema_26 < sma_20 < sma_50)
-            momentum_bear = (df['MACD'].iloc[-1] < df['MACD_Signal'].iloc[-1])
-            if bearish_trend and momentum_bear and rsi > 30:
-                stop_loss = max(current + 2 * atr, resistance)
-                risk = stop_loss - current
-                take_profit = current - 3 * risk
-                confidence = 0.82
-                if volume_ratio > 1.5:
-                    confidence += 0.08
-                if timeframe == "15m":
-                    confidence += 0.05
-                if rsi > 40:
-                    confidence += 0.05
-                signals.append(ProfessionalSignal(symbol, "SELL", f"Trend_Following_{timeframe}", timeframe,
-                                                  current, stop_loss, take_profit, confidence, float(df['Volume'].iloc[-1]),
-                                                  {'RSI': rsi, 'MACD': df['MACD'].iloc[-1]}, support, resistance))
-        except Exception:
-            pass
-        return signals
-    def strategy_mean_reversion_pro(self, symbol: str, df: pd.DataFrame, timeframe: str):
-        signals = []
-        if len(df) < 30:
-            return signals
-        try:
-            current = df['Close'].iloc[-1]
-            bb_lower = df['BB_Lower'].iloc[-1]
-            bb_upper = df['BB_Upper'].iloc[-1]
-            rsi = df['RSI'].iloc[-1]
-            stoch_k = df['Stoch_K'].iloc[-1]
-            atr = float(df['ATR'].iloc[-1]) if not pd.isna(df['ATR'].iloc[-1]) else max(0.0001, current * 0.01)
-            support = df['Support'].iloc[-1] if not pd.isna(df['Support'].iloc[-1]) else current * 0.98
-            resistance = df['Resistance'].iloc[-1] if not pd.isna(df['Resistance'].iloc[-1]) else current * 1.02
-            if (current <= bb_lower and rsi < 35 and stoch_k < 20 and 
-                df['Close'].iloc[-1] > df['Close'].iloc[-2] and
-                current <= support * 1.01):
-                stop_loss = min(current - 1.5 * atr, support * 0.99)
-                risk = current - stop_loss
-                take_profit = current + 2.5 * risk
-                confidence = 0.78
-                if rsi < 25:
-                    confidence += 0.07
-                if stoch_k < 10:
-                    confidence += 0.05
-                signals.append(ProfessionalSignal(symbol, "BUY", f"Mean_Reversion_{timeframe}", timeframe,
-                                                  current, stop_loss, take_profit, confidence, float(df['Volume'].iloc[-1]),
-                                                  {'RSI': rsi, 'Stoch_K': stoch_k}, support, resistance))
-            if (current >= bb_upper and rsi > 65 and stoch_k > 80 and 
-                df['Close'].iloc[-1] < df['Close'].iloc[-2] and
-                current >= resistance * 0.99):
-                stop_loss = max(current + 1.5 * atr, resistance * 1.01)
-                risk = stop_loss - current
-                take_profit = current - 2.5 * risk
-                confidence = 0.78
-                if rsi > 75:
-                    confidence += 0.07
-                if stoch_k > 90:
-                    confidence += 0.05
-                signals.append(ProfessionalSignal(symbol, "SELL", f"Mean_Reversion_{timeframe}", timeframe,
-                                                  current, stop_loss, take_profit, confidence, float(df['Volume'].iloc[-1]),
-                                                  {'RSI': rsi, 'Stoch_K': stoch_k}, support, resistance))
-        except Exception:
-            pass
-        return signals
-    def strategy_breakout_pro(self, symbol: str, df: pd.DataFrame, timeframe: str):
-        signals = []
-        if len(df) < 25:
-            return signals
-        try:
-            current = df['Close'].iloc[-1]
-            resistance = df['Resistance'].iloc[-2] if len(df) > 2 else df['High'].iloc[-1]
-            support = df['Support'].iloc[-2] if len(df) > 2 else df['Low'].iloc[-1]
-            volume_ratio = float(df['Volume_Ratio'].iloc[-1]) if not pd.isna(df['Volume_Ratio'].iloc[-1]) else 1.0
-            atr = float(df['ATR'].iloc[-1]) if not pd.isna(df['ATR'].iloc[-1]) else max(0.0001, current * 0.01)
-            rsi = df['RSI'].iloc[-1] if not pd.isna(df['RSI'].iloc[-1]) else 50
-            if current > resistance and volume_ratio > 2.0 and rsi < 70:
-                stop_loss = min(current - 2 * atr, resistance)
-                risk = current - stop_loss
-                take_profit = current + 3 * risk
-                confidence = min(0.88, 0.75 + (volume_ratio - 1.5) * 0.1)
-                if rsi > 50:
-                    confidence += 0.05
-                signals.append(ProfessionalSignal(symbol, "BUY", f"Breakout_{timeframe}", timeframe,
-                                                  current, stop_loss, take_profit, confidence, float(df['Volume'].iloc[-1]),
-                                                  {'Volume_Ratio': volume_ratio, 'RSI': rsi}, support, resistance))
-            if current < support and volume_ratio > 2.0 and rsi > 30:
-                stop_loss = max(current + 2 * atr, support)
-                risk = stop_loss - current
-                take_profit = current - 3 * risk
-                confidence = min(0.88, 0.75 + (volume_ratio - 1.5) * 0.1)
-                if rsi < 50:
-                    confidence += 0.05
-                signals.append(ProfessionalSignal(symbol, "SELL", f"Breakout_{timeframe}", timeframe,
-                                                  current, stop_loss, take_profit, confidence, float(df['Volume'].iloc[-1]),
-                                                  {'Volume_Ratio': volume_ratio, 'RSI': rsi}, support, resistance))
-        except Exception:
-            pass
-        return signals
-    def strategy_scalping_15m(self, symbol: str, df: pd.DataFrame):
-        signals = []
-        if len(df) < 30:
-            return signals
-        try:
-            current = df['Close'].iloc[-1]
-            ema_short = df['EMA_12'].iloc[-1]
-            ema_long = df['EMA_26'].iloc[-1]
-            atr = float(df['ATR'].iloc[-1]) if not pd.isna(df['ATR'].iloc[-1]) else max(0.00001, current * 0.005)
-            volume_ratio = float(df['Volume_Ratio'].iloc[-1]) if not pd.isna(df['Volume_Ratio'].iloc[-1]) else 1.0
-            rsi = df['RSI'].iloc[-1] if not pd.isna(df['RSI'].iloc[-1]) else 50
-            support = df['Support'].iloc[-1] if not pd.isna(df['Support'].iloc[-1]) else current * 0.98
-            resistance = df['Resistance'].iloc[-1] if not pd.isna(df['Resistance'].iloc[-1]) else current * 1.02
-            if (ema_short > ema_long and df['Close'].iloc[-1] > df['Open'].iloc[-1] and 
-                volume_ratio > 1.2 and rsi < 65 and current > support):
-                stop_loss = min(current - 0.8 * atr, support)
-                take_profit = current + 1.6 * atr
-                confidence = 0.76 + (min(volume_ratio - 1.2, 0.6) * 0.05)
-                if rsi > 40:
-                    confidence += 0.05
-                signals.append(ProfessionalSignal(symbol, "BUY", "Scalping_15m", "15m",
-                                                  current, stop_loss, take_profit, confidence, float(df['Volume'].iloc[-1]),
-                                                  {'ATR': atr, 'Volume_Ratio': volume_ratio, 'RSI': rsi}, support, resistance))
-            if (ema_short < ema_long and df['Close'].iloc[-1] < df['Open'].iloc[-1] and 
-                volume_ratio > 1.2 and rsi > 35 and current < resistance):
-                stop_loss = max(current + 0.8 * atr, resistance)
-                take_profit = current - 1.6 * atr
-                confidence = 0.76 + (min(volume_ratio - 1.2, 0.6) * 0.05)
-                if rsi < 60:
-                    confidence += 0.05
-                signals.append(ProfessionalSignal(symbol, "SELL", "Scalping_15m", "15m",
-                                                  current, stop_loss, take_profit, confidence, float(df['Volume'].iloc[-1]),
-                                                  {'ATR': atr, 'Volume_Ratio': volume_ratio, 'RSI': rsi}, support, resistance))
-        except Exception:
-            pass
-        return signals
-    def run_pro_strategies(self, symbol: str, timeframe: str):
-        df = self.dm.get_trading_data(symbol, period="2d", interval=timeframe)
-        if df.empty:
-            return []
-        df = self.dm.calculate_pro_indicators(df)
-        if df.empty:
-            return []
-        signals = []
-        signals.extend(self.strategy_trend_following(symbol, df, timeframe))
-        signals.extend(self.strategy_mean_reversion_pro(symbol, df, timeframe))
-        signals.extend(self.strategy_breakout_pro(symbol, df, timeframe))
-        if timeframe == '15m':
-            signals.extend(self.strategy_scalping_15m(symbol, df))
-        return signals
-    # ---------- Charting & display (omitted heavy charting code for brevity in this update) ----------
-    def display_trading_signals(self):
-        st.markdown("## 📡 Live Trading Signals")
-        confirmed = list(st.session_state.signals.values())
-        confirmed.sort(key=lambda x: x.confidence, reverse=True)
-        if not confirmed:
-            st.info("No high-confidence signals right now.")
-            return
-        st.markdown(f"### Top {min(12, len(confirmed))} Signals (Auto-generated)")
-        st.info(f"Last signal generation: {st.session_state.last_signal_gen.strftime('%Y-%m-%d %H:%M:%S')}")
-        for i, sig in enumerate(confirmed[:12]):
-            with st.expander(f"{sig.symbol} | {sig.strategy} | {sig.timeframe} | {sig.action} | Conf {sig.confidence:.2f}", expanded=(i==0)):
-                cols = st.columns(5)
-                with cols[0]:
-                    st.write(f"**Action:** {sig.action}")
-                    st.write(f"**Timeframe:** {sig.timeframe}")
-                    st.write(f"**Strategy:** {sig.strategy}")
-                with cols[1]:
-                    st.write(f"**Entry:** ${sig.entry:.6f}")
-                    st.write(f"**Stop:** ${sig.stop_loss:.6f}")
-                    st.write(f"**TP:** ${sig.take_profit:.6f}")
-                with cols[2]:
-                    risk = abs(sig.entry - sig.stop_loss)
-                    reward = abs(sig.take_profit - sig.entry)
-                    rr = (reward / risk) if risk != 0 else 0
-                    st.write(f"**R:R:** {rr:.2f}")
-                    st.write(f"**Vol:** {sig.volume:,.0f}")
-                with cols[3]:
-                    if sig.support and sig.resistance:
-                        st.write(f"**Support:** ${sig.support:.6f}")
-                        st.write(f"**Resistance:** ${sig.resistance:.6f}")
-                with cols[4]:
-                    if st.button("Execute (Paper)", key=f"exec_manual_{i}_{sig.symbol}"):
-                        price = self.dm.get_current_price(sig.symbol)
-                        if price:
-                            qty = self._calc_quantity_from_risk(sig, st.session_state.auto_trade_config.get('trade_amount', 1000.0))
-                            placed = self.pt.place_trade(sig.symbol, sig.action, qty, price, sig)
-                            if placed:
-                                st.success(f"Placed {sig.action} {sig.symbol} qty {qty:.6f} @ {price:.6f}")
-                                st.experimental_rerun()
-                            else:
-                                st.warning("Insufficient balance to place this manual trade.")
-                        else:
-                            st.warning("Price unavailable.")
-    def _calc_quantity_from_risk(self, sig: ProfessionalSignal, trade_amount: float):
-        risk_amount = trade_amount * 0.02 
-        price_diff = abs(sig.entry - sig.stop_loss) if sig.stop_loss and sig.entry != sig.stop_loss else max(1e-6, sig.entry * 0.01)
-        quantity = max(1e-6, risk_amount / price_diff)
-        notional = quantity * sig.entry
-        if notional > st.session_state.paper_trading['balance'] * 5:
-            quantity = (st.session_state.paper_trading['balance'] * 5) / sig.entry
-        return quantity
-    def display_portfolio(self):
-        st.markdown("## 💼 Portfolio")
-        self.pt.update_positions(self.dm)
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Cash", f"${self.pt.get_balance():,.2f}")
-        with col2:
-            st.metric("Portfolio Value", f"${self.pt.portfolio_value():,.2f}")
-        with col3:
-            st.metric("Realized P&L", f"${st.session_state.paper_trading['realized_pnl']:,.2f}")
-        with col4:
-            unrealized_pnl = st.session_state.paper_trading['unrealized_pnl']
-            st.metric("Unrealized P&L", f"${unrealized_pnl:,.2f}", f"{(unrealized_pnl / self.pt.get_balance() * 100):.2f}%" if self.pt.get_balance() > 0 else "0.00%")
-        st.markdown("### Active Positions")
-        positions = self.pt.get_positions()
-        if positions:
-            for sym, pos in positions.items():
-                c1, c2, c3, c4, c5, c6 = st.columns([2,1,1,1,1,1])
-                with c1:
-                    st.write(f"**{sym}**")
-                    st.write(f"Side: {pos['side']}")
-                    if pos.get('signal'):
-                        st.write(f"*{pos.get('signal').strategy}*")
-                with c2:
-                    st.write(f"Qty: {pos['quantity']:.6f}")
-                    st.write(f"Entry: ${pos['entry_price']:.6f}")
-                with c3:
-                    curr = pos.get('current_price', pos['entry_price'])
-                    st.write(f"Price: ${curr:.6f}")
-                with c4:
-                    pnl = pos.get('unrealized_pnl', 0.0)
-                    notional = pos['quantity'] * pos['entry_price']
-                    pct = (pnl / notional) * 100 if notional != 0 else 0
-                    color = "green" if pnl >= 0 else "red"
-                    st.markdown(f"<span style='color:{color}'>P&L: ${pnl:.2f}<br>({pct:+.2f}%)</span>", unsafe_allow_html=True)
-                with c5:
-                    if pos.get('signal'):
-                        st.write(f"SL: ${pos['signal'].stop_loss:.6f}")
-                        st.write(f"TP: ${pos['signal'].take_profit:.6f}")
-                with c6:
-                    if st.button("Close", key=f"close_{sym}"):
-                        curr = pos.get('current_price', pos['entry_price'])
-                        self.pt.close_position(sym, curr, "Manual Close")
-                        st.experimental_rerun()
-                st.markdown("---")
-        else:
-            st.info("No active positions.")
-    def display_auto_trading(self):
-        st.markdown("## 🤖 Auto-Trading")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.subheader("Config")
-            auto_trade = st.checkbox("Enable Auto-Trading", value=st.session_state.auto_trade_enabled, key="auto_trade_enabled_checkbox")
-            st.session_state.auto_trade_enabled = auto_trade
-            trade_amount = st.number_input("Trade Size ($)", min_value=100.0, max_value=100000.0, value=float(st.session_state.auto_trade_config.get('trade_amount',1000.0)), step=100.0, key="trade_amount_input")
-            max_positions = st.slider("Max Positions", 1, 10, int(st.session_state.auto_trade_config.get('max_positions',5)), key="max_positions_slider")
-            st.session_state.auto_trade_config['trade_amount'] = float(trade_amount)
-            st.session_state.auto_trade_config['max_positions'] = int(max_positions)
-            if st.button("🔄 Execute Auto-Trading Cycle Now (Manual Run)"):
-                with st.spinner("Running auto-trading..."):
-                    self.execute_auto_trading(st.session_state.auto_trade_config['trade_amount'], st.session_state.auto_trade_config['max_positions'])
-                st.success("Auto-trade cycle completed.")
-                st.experimental_rerun()
-        with c2:
-            st.subheader("Performance")
-            st.metric("Total Trades", st.session_state.paper_trading['total_trades'])
-            if st.session_state.paper_trading['total_trades'] > 0:
-                win_rate = (st.session_state.paper_trading['winning_trades'] / st.session_state.paper_trading['total_trades']) * 100
-                st.metric("Win Rate", f"{win_rate:.1f}%")
-            st.metric("Realized P&L", f"${st.session_state.paper_trading['realized_pnl']:,.2f}")
-            st.metric("Signals Generated", st.session_state.trading_engine['signals_generated'])
-            if st.session_state.auto_trade_enabled:
-                st.success("🟢 Auto-Trading: ACTIVE (Signals gen every 30s)")
-            else:
-                st.warning("🟡 Auto-Trading: INACTIVE")
-    def execute_auto_trading(self, trade_amount: float, max_positions: int):
-        """Execute trades for newly generated signals, avoiding duplicates and respecting max positions"""
-        self.pt.update_positions(self.dm)
-        confirmed = list(st.session_state.signals.values())
-        # Filter out signals for which we already opened positions or already executed recently
-        open_symbols = set(self.pt.get_positions().keys())
-        # Sort by confidence
-        confirmed.sort(key=lambda x: x.confidence, reverse=True)
-        current_positions = len(self.pt.get_positions())
-        available_slots = max(0, max_positions - current_positions)
-        executed = 0
-        for sig in confirmed:
-            if executed >= available_slots:
+        self.signal_history = []
+    
+    def add_signal(self, signal: TradingSignal):
+        """Add signal to history"""
+        self.signal_history.append(signal)
+    
+    def update_signal_result(self, trade_id: str, result: str):
+        """Update signal result when trade is closed"""
+        for signal in self.signal_history:
+            if signal.trade_id == trade_id:
+                signal.result = result
                 break
-            sid = sig.id()
-            if sid in st.session_state.executed_signals:
-                continue  # already executed recently
-            if sig.symbol in open_symbols:
+    
+    def get_strategy_accuracy(self, strategy: str, days_back: int = 30) -> Dict:
+        """Calculate accuracy for a specific strategy"""
+        cutoff_date = datetime.now() - timedelta(days=days_back)
+        strategy_signals = [
+            s for s in self.signal_history 
+            if s.strategy == strategy and s.timestamp >= cutoff_date and s.result in ["WIN", "LOSS"]
+        ]
+        
+        if not strategy_signals:
+            return {"total": 0, "wins": 0, "accuracy": 0}
+        
+        wins = sum(1 for s in strategy_signals if s.result == "WIN")
+        total = len(strategy_signals)
+        accuracy = (wins / total) * 100 if total > 0 else 0
+        
+        return {
+            "total": total,
+            "wins": wins,
+            "accuracy": accuracy
+        }
+    
+    def get_all_strategies_accuracy(self, days_back: int = 30) -> Dict[str, Dict]:
+        """Calculate accuracy for all strategies"""
+        strategies = set(s.strategy for s in self.signal_history)
+        accuracy_data = {}
+        
+        for strategy in strategies:
+            accuracy_data[strategy] = self.get_strategy_accuracy(strategy, days_back)
+        
+        return accuracy_data
+
+# Paper Trading Data Classes
+@dataclass
+class PaperTrade:
+    id: str
+    symbol: str
+    action: str  # "BUY" or "SELL"
+    entry_price: float
+    entry_time: datetime
+    stop_loss: float
+    targets: List[float]
+    quantity: int
+    strategy: str
+    timeframe: str
+    signal_confidence: float
+    status: str  # "OPEN", "CLOSED", "CANCELLED"
+    exit_price: Optional[float] = None
+    exit_time: Optional[datetime] = None
+    exit_reason: Optional[str] = None
+    pnl: Optional[float] = None
+    pnl_percent: Optional[float] = None
+
+@dataclass
+class StrategyPerformance:
+    strategy_name: str
+    total_trades: int
+    winning_trades: int
+    losing_trades: int
+    win_rate: float
+    avg_profit: float
+    avg_loss: float
+    profit_factor: float
+    total_pnl: float
+    max_drawdown: float
+    sharpe_ratio: float
+
+# Market Regime Enum
+class MarketRegime:
+    BULLISH = "BULLISH"
+    BEARISH = "BEARISH" 
+    RANGING = "RANGING"
+    HIGH_VOLATILITY = "HIGH_VOLATILITY"
+    LOW_VOLATILITY = "LOW_VOLATILITY"
+
+# Enhanced Strategy Manager with Multi-Timeframe Support
+class StrategyManager:
+    def __init__(self):
+        self.timeframes = ['5m', '15m', '30m', '1h', '4h', '1d']
+        self.strategies = {
+            "Multi-Timeframe Momentum": self.multi_timeframe_momentum,
+            "Volume-Weighted Breakout": self.volume_weighted_breakout,
+            "Adaptive MA Crossover": self.adaptive_ma_crossover,
+            "RSI Divergence": self.rsi_divergence_strategy,
+            "Bollinger Band Squeeze": self.bollinger_squeeze_strategy,
+            "Market Profile": self.market_profile_strategy,
+        }
+        
+        # ML model for signal confirmation
+        self.ml_model = None
+        self.scaler = StandardScaler()
+        self.load_ml_model()
+    
+    def load_ml_model(self):
+        """Load or create ML model for signal validation"""
+        try:
+            # For Streamlit Cloud, we'll create a model instead of loading from file
+            self.ml_model = RandomForestClassifier(n_estimators=50, random_state=42)
+            # Create dummy data to fit the model
+            X_dummy = np.random.randn(100, 6)
+            y_dummy = np.random.randint(0, 2, 100)
+            self.ml_model.fit(X_dummy, y_dummy)
+            self.scaler.fit(X_dummy)
+        except Exception as e:
+            print(f"Error creating ML model: {e}")
+            # Fallback to simple model
+            self.ml_model = RandomForestClassifier(n_estimators=50, random_state=42)
+    
+    def run_multi_timeframe_analysis(self, symbol: str) -> List[TradingSignal]:
+        """Run strategies across all timeframes"""
+        all_signals = []
+        
+        for timeframe in self.timeframes:
+            try:
+                # Get data for this timeframe
+                data = data_manager.get_multi_timeframe_data(symbol, timeframe)
+                if data.empty or len(data) < 50:
+                    continue
+                
+                # Run all strategies for this timeframe
+                for strategy_name, strategy_func in self.strategies.items():
+                    try:
+                        signals = strategy_func(symbol, data.copy(), timeframe)
+                        if signals:
+                            all_signals.extend(signals)
+                    except Exception as e:
+                        continue
+                        
+            except Exception as e:
                 continue
-            price = self.dm.get_current_price(sig.symbol)
-            if not price:
-                continue
-            quantity = self._calc_quantity_from_risk(sig, trade_amount)
-            placed = self.pt.place_trade(sig.symbol, sig.action, quantity, price, sig)
-            if placed:
-                executed += 1
-                exec_time = datetime.now()
-                # Mark executed signal to prevent re-execution
-                st.session_state.executed_signals[sid] = exec_time
-                # Add a concise auto-trade entry in trade_log (place_trade already appends; we add system entry)
-                st.session_state.trade_log.append({
-                    'timestamp': exec_time,
-                    'execution_time': exec_time,
-                    'symbol': sig.symbol,
-                    'action': f'AUTO_EXEC_{sig.action}',
-                    'quantity': quantity,
-                    'price': price,
-                    'signal': sig.strategy
-                })
-        st.session_state.trade_log.append({
-            'timestamp': datetime.now(),
-            'symbol': 'SYSTEM',
-            'action': 'AUTO_TRADING_RUN',
-            'executed': executed,
-            'available_slots': available_slots
+        
+        # Apply ML confidence boost
+        enhanced_signals = self.enhance_signals_with_ml(all_signals, symbol)
+        
+        return enhanced_signals
+    
+    def multi_timeframe_momentum(self, symbol: str, data: pd.DataFrame, timeframe: str) -> List[TradingSignal]:
+        """Enhanced momentum with multi-timeframe confirmation"""
+        signals = []
+        
+        if len(data) < 50:
+            return signals
+        
+        try:
+            # Calculate momentum across multiple periods
+            periods = [5, 10, 20]
+            momentum_scores = {}
+            
+            for period in periods:
+                data[f'momentum_{period}'] = data['Close'].pct_change(period)
+                data[f'volume_ma_{period}'] = data['Volume'].rolling(period).mean()
+                momentum_scores[period] = float(data[f'momentum_{period}'].iloc[-1])
+            
+            # Volume analysis
+            current_volume = float(data['Volume'].iloc[-1])
+            volume_ma_20 = float(data['volume_ma_20'].iloc[-1])
+            volume_ratio = current_volume / volume_ma_20 if volume_ma_20 > 0 else 1
+            
+            # Volatility adjusted momentum
+            volatility = float(data['Close'].pct_change().std() * np.sqrt(252))
+            volatility_score = min(volatility / 0.2, 2.0)  # Normalize volatility
+            
+            current_price = float(data['Close'].iloc[-1])
+            
+            # Multi-timeframe momentum score
+            momentum_score = (
+                momentum_scores[5] * 0.4 + 
+                momentum_scores[10] * 0.3 + 
+                momentum_scores[20] * 0.3
+            )
+            
+            # Enhanced BUY conditions - FIXED: Use explicit boolean comparisons
+            momentum_positive = all(m > 0 for m in momentum_scores.values())
+            
+            if (momentum_score > 0.02 and volume_ratio > 1.3 and momentum_positive):
+                
+                # Dynamic stop loss based on volatility
+                atr = float(self.calculate_atr(data).iloc[-1])
+                stop_loss = current_price - (2 * atr)
+                
+                # Dynamic targets based on timeframe
+                tf_multiplier = self.get_timeframe_multiplier(timeframe)
+                target1 = current_price * (1 + 0.01 * tf_multiplier)
+                target2 = current_price * (1 + 0.02 * tf_multiplier)
+                target3 = current_price * (1 + 0.03 * tf_multiplier)
+                
+                confidence = min(0.7 + (momentum_score * 10) + (volume_ratio - 1), 0.95)
+                
+                reasoning = (
+                    f"Strong multi-timeframe momentum on {timeframe}. "
+                    f"Momentum score: {momentum_score:.3f}, Volume: {volume_ratio:.1f}x, "
+                    f"Volatility: {volatility:.3f}"
+                )
+                
+                signal = TradingSignal(
+                    symbol=symbol,
+                    action="BUY",
+                    strategy="Multi-Timeframe Momentum",
+                    timeframe=timeframe,
+                    entry=current_price,
+                    stop_loss=stop_loss,
+                    target1=target1,
+                    target2=target2,
+                    target3=target3,
+                    confidence=confidence,
+                    risk_reward=2.0,
+                    timestamp=datetime.now(),
+                    reasoning=reasoning,
+                    priority="HIGH" if confidence > 0.8 else "MEDIUM"
+                )
+                signals.append(signal)
+            
+            # Enhanced SELL conditions
+            momentum_negative = all(m < 0 for m in momentum_scores.values())
+            
+            if (momentum_score < -0.02 and volume_ratio > 1.3 and momentum_negative):
+                
+                atr = float(self.calculate_atr(data).iloc[-1])
+                stop_loss = current_price + (2 * atr)
+                
+                tf_multiplier = self.get_timeframe_multiplier(timeframe)
+                target1 = current_price * (1 - 0.01 * tf_multiplier)
+                target2 = current_price * (1 - 0.02 * tf_multiplier)
+                target3 = current_price * (1 - 0.03 * tf_multiplier)
+                
+                confidence = min(0.65 + (abs(momentum_score) * 10) + (volume_ratio - 1), 0.90)
+                
+                reasoning = (
+                    f"Strong bearish momentum on {timeframe}. "
+                    f"Momentum score: {momentum_score:.3f}, Volume: {volume_ratio:.1f}x"
+                )
+                
+                signal = TradingSignal(
+                    symbol=symbol,
+                    action="SELL",
+                    strategy="Multi-Timeframe Momentum",
+                    timeframe=timeframe,
+                    entry=current_price,
+                    stop_loss=stop_loss,
+                    target1=target1,
+                    target2=target2,
+                    target3=target3,
+                    confidence=confidence,
+                    risk_reward=2.0,
+                    timestamp=datetime.now(),
+                    reasoning=reasoning,
+                    priority="HIGH" if confidence > 0.75 else "MEDIUM"
+                )
+                signals.append(signal)
+        except Exception as e:
+            pass
+        
+        return signals
+    
+    def volume_weighted_breakout(self, symbol: str, data: pd.DataFrame, timeframe: str) -> List[TradingSignal]:
+        """Breakout strategy with volume confirmation"""
+        signals = []
+        
+        if len(data) < 30:
+            return signals
+        
+        try:
+            # Calculate support/resistance with volume profile
+            data = self.calculate_volume_profile_levels(data)
+            current_price = float(data['Close'].iloc[-1])
+            current_volume = float(data['Volume'].iloc[-1])
+            
+            # Volume-weighted moving averages
+            data['vwap'] = self.calculate_vwap(data)
+            data['volume_ma'] = data['Volume'].rolling(20).mean()
+            
+            # Key levels - FIXED: Convert to float
+            resistance = float(data['resistance'].iloc[-1])
+            support = float(data['support'].iloc[-1])
+            vwap = float(data['vwap'].iloc[-1])
+            
+            volume_ratio = current_volume / float(data['volume_ma'].iloc[-1])
+            atr = float(self.calculate_atr(data).iloc[-1])
+            
+            # Breakout above resistance with volume - FIXED: Explicit boolean comparisons
+            breakout_condition = (current_price > resistance and volume_ratio > 1.5 and current_price > vwap)
+            
+            if breakout_condition:
+                
+                stop_loss = min(resistance, current_price - (1.5 * atr))
+                tf_multiplier = self.get_timeframe_multiplier(timeframe)
+                
+                target1 = current_price + (1 * atr)
+                target2 = current_price + (2 * atr)
+                target3 = current_price + (3 * atr)
+                
+                reasoning = (
+                    f"Volume-weighted breakout on {timeframe}. "
+                    f"Broke resistance: {resistance:.2f}, "
+                    f"Volume: {volume_ratio:.1f}x, VWAP: {vwap:.2f}"
+                )
+                
+                signal = TradingSignal(
+                    symbol=symbol,
+                    action="BUY",
+                    strategy="Volume-Weighted Breakout",
+                    timeframe=timeframe,
+                    entry=current_price,
+                    stop_loss=stop_loss,
+                    target1=target1,
+                    target2=target2,
+                    target3=target3,
+                    confidence=0.75,
+                    risk_reward=2.0,
+                    timestamp=datetime.now(),
+                    reasoning=reasoning
+                )
+                signals.append(signal)
+            
+            # Breakdown below support with volume
+            breakdown_condition = (current_price < support and volume_ratio > 1.5 and current_price < vwap)
+            
+            if breakdown_condition:
+                
+                stop_loss = max(support, current_price + (1.5 * atr))
+                tf_multiplier = self.get_timeframe_multiplier(timeframe)
+                
+                target1 = current_price - (1 * atr)
+                target2 = current_price - (2 * atr)
+                target3 = current_price - (3 * atr)
+                
+                reasoning = (
+                    f"Volume-weighted breakdown on {timeframe}. "
+                    f"Broke support: {support:.2f}, "
+                    f"Volume: {volume_ratio:.1f}x, VWAP: {vwap:.2f}"
+                )
+                
+                signal = TradingSignal(
+                    symbol=symbol,
+                    action="SELL",
+                    strategy="Volume-Weighted Breakout",
+                    timeframe=timeframe,
+                    entry=current_price,
+                    stop_loss=stop_loss,
+                    target1=target1,
+                    target2=target2,
+                    target3=target3,
+                    confidence=0.70,
+                    risk_reward=2.0,
+                    timestamp=datetime.now(),
+                    reasoning=reasoning
+                )
+                signals.append(signal)
+        except Exception as e:
+            pass
+        
+        return signals
+    
+    def adaptive_ma_crossover(self, symbol: str, data: pd.DataFrame, timeframe: str) -> List[TradingSignal]:
+        """Adaptive MA crossover based on market regime"""
+        signals = []
+        
+        if len(data) < 100:
+            return signals
+        
+        try:
+            # Adaptive MA periods based on volatility
+            volatility = float(data['Close'].pct_change().std() * np.sqrt(252))
+            
+            if volatility > 0.25:  # High volatility
+                fast_period, slow_period = 5, 15
+            elif volatility < 0.15:  # Low volatility
+                fast_period, slow_period = 10, 30
+            else:  # Medium volatility
+                fast_period, slow_period = 8, 21
+            
+            data[f'ma_fast'] = data['Close'].rolling(fast_period).mean()
+            data[f'ma_slow'] = data['Close'].rolling(slow_period).mean()
+            data['ma_trend'] = data['Close'].rolling(50).mean()
+            
+            current_price = float(data['Close'].iloc[-1])
+            ma_fast = float(data[f'ma_fast'].iloc[-1])
+            ma_slow = float(data[f'ma_slow'].iloc[-1])
+            ma_trend = float(data['ma_trend'].iloc[-1])
+            
+            ma_fast_prev = float(data[f'ma_fast'].iloc[-2]) if len(data) > 1 else ma_fast
+            ma_slow_prev = float(data[f'ma_slow'].iloc[-2]) if len(data) > 1 else ma_slow
+            
+            # Golden Cross with trend alignment - FIXED: Explicit boolean comparisons
+            golden_cross = (ma_fast > ma_slow and ma_fast_prev <= ma_slow_prev and
+                          current_price > ma_trend and ma_fast > ma_trend)
+            
+            if golden_cross:
+                
+                stop_loss = ma_slow
+                tf_multiplier = self.get_timeframe_multiplier(timeframe)
+                
+                target1 = current_price * (1 + 0.015 * tf_multiplier)
+                target2 = current_price * (1 + 0.03 * tf_multiplier)
+                target3 = current_price * (1 + 0.045 * tf_multiplier)
+                
+                reasoning = (
+                    f"Adaptive MA Crossover (Golden Cross) on {timeframe}. "
+                    f"Fast MA ({fast_period}) crossed above Slow MA ({slow_period}). "
+                    f"Trend aligned, Volatility: {volatility:.3f}"
+                )
+                
+                signal = TradingSignal(
+                    symbol=symbol,
+                    action="BUY",
+                    strategy="Adaptive MA Crossover",
+                    timeframe=timeframe,
+                    entry=current_price,
+                    stop_loss=stop_loss,
+                    target1=target1,
+                    target2=target2,
+                    target3=target3,
+                    confidence=0.72,
+                    risk_reward=2.0,
+                    timestamp=datetime.now(),
+                    reasoning=reasoning
+                )
+                signals.append(signal)
+            
+            # Death Cross with trend alignment
+            death_cross = (ma_fast < ma_slow and ma_fast_prev >= ma_slow_prev and
+                         current_price < ma_trend and ma_fast < ma_trend)
+            
+            if death_cross:
+                
+                stop_loss = ma_slow
+                tf_multiplier = self.get_timeframe_multiplier(timeframe)
+                
+                target1 = current_price * (1 - 0.015 * tf_multiplier)
+                target2 = current_price * (1 - 0.03 * tf_multiplier)
+                target3 = current_price * (1 - 0.045 * tf_multiplier)
+                
+                reasoning = (
+                    f"Adaptive MA Crossover (Death Cross) on {timeframe}. "
+                    f"Fast MA ({fast_period}) crossed below Slow MA ({slow_period}). "
+                    f"Trend aligned, Volatility: {volatility:.3f}"
+                )
+                
+                signal = TradingSignal(
+                    symbol=symbol,
+                    action="SELL",
+                    strategy="Adaptive MA Crossover",
+                    timeframe=timeframe,
+                    entry=current_price,
+                    stop_loss=stop_loss,
+                    target1=target1,
+                    target2=target2,
+                    target3=target3,
+                    confidence=0.68,
+                    risk_reward=2.0,
+                    timestamp=datetime.now(),
+                    reasoning=reasoning
+                )
+                signals.append(signal)
+        except Exception as e:
+            pass
+        
+        return signals
+    
+    def rsi_divergence_strategy(self, symbol: str, data: pd.DataFrame, timeframe: str) -> List[TradingSignal]:
+        """RSI divergence strategy for reversals"""
+        signals = []
+        
+        if len(data) < 30:
+            return signals
+        
+        try:
+            # Calculate RSI - FIXED: Proper assignment
+            rsi_values = self.calculate_rsi(data, period=14)
+            data['rsi'] = rsi_values
+            
+            current_rsi = float(data['rsi'].iloc[-1])
+            current_price = float(data['Close'].iloc[-1])
+            
+            # Look for divergences (last 10 periods)
+            lookback = 10
+            if len(data) > lookback:
+                # Bullish divergence: Price makes lower low, RSI makes higher low
+                price_lows = data['Low'].tail(lookback)
+                rsi_lows = data['rsi'].tail(lookback)
+                
+                # Bearish divergence: Price makes higher high, RSI makes lower high
+                price_highs = data['High'].tail(lookback)
+                rsi_highs = data['rsi'].tail(lookback)
+                
+                # Bullish divergence detection
+                bullish_divergence = (float(price_lows.iloc[-1]) < float(price_lows.iloc[-2]) and 
+                                    float(rsi_lows.iloc[-1]) > float(rsi_lows.iloc[-2]) and 
+                                    current_rsi < 40)
+                
+                if bullish_divergence:
+                    
+                    atr = float(self.calculate_atr(data).iloc[-1])
+                    stop_loss = current_price - (2 * atr)
+                    tf_multiplier = self.get_timeframe_multiplier(timeframe)
+                    
+                    target1 = current_price * (1 + 0.02 * tf_multiplier)
+                    target2 = current_price * (1 + 0.04 * tf_multiplier)
+                    target3 = current_price * (1 + 0.06 * tf_multiplier)
+                    
+                    reasoning = (
+                        f"Bullish RSI Divergence on {timeframe}. "
+                        f"Price made lower low but RSI made higher low. "
+                        f"Current RSI: {current_rsi:.1f}"
+                    )
+                    
+                    signal = TradingSignal(
+                        symbol=symbol,
+                        action="BUY",
+                        strategy="RSI Divergence",
+                        timeframe=timeframe,
+                        entry=current_price,
+                        stop_loss=stop_loss,
+                        target1=target1,
+                        target2=target2,
+                        target3=target3,
+                        confidence=0.75,
+                        risk_reward=2.5,
+                        timestamp=datetime.now(),
+                        reasoning=reasoning,
+                        priority="HIGH"
+                    )
+                    signals.append(signal)
+                
+                # Bearish divergence detection
+                bearish_divergence = (float(price_highs.iloc[-1]) > float(price_highs.iloc[-2]) and 
+                                    float(rsi_highs.iloc[-1]) < float(rsi_highs.iloc[-2]) and 
+                                    current_rsi > 60)
+                
+                if bearish_divergence:
+                    
+                    atr = float(self.calculate_atr(data).iloc[-1])
+                    stop_loss = current_price + (2 * atr)
+                    tf_multiplier = self.get_timeframe_multiplier(timeframe)
+                    
+                    target1 = current_price * (1 - 0.02 * tf_multiplier)
+                    target2 = current_price * (1 - 0.04 * tf_multiplier)
+                    target3 = current_price * (1 - 0.06 * tf_multiplier)
+                    
+                    reasoning = (
+                        f"Bearish RSI Divergence on {timeframe}. "
+                        f"Price made higher high but RSI made lower high. "
+                        f"Current RSI: {current_rsi:.1f}"
+                    )
+                    
+                    signal = TradingSignal(
+                        symbol=symbol,
+                        action="SELL",
+                        strategy="RSI Divergence",
+                        timeframe=timeframe,
+                        entry=current_price,
+                        stop_loss=stop_loss,
+                        target1=target1,
+                        target2=target2,
+                        target3=target3,
+                        confidence=0.70,
+                        risk_reward=2.5,
+                        timestamp=datetime.now(),
+                        reasoning=reasoning,
+                        priority="HIGH"
+                    )
+                    signals.append(signal)
+        except Exception as e:
+            pass
+        
+        return signals
+    
+    def bollinger_squeeze_strategy(self, symbol: str, data: pd.DataFrame, timeframe: str) -> List[TradingSignal]:
+        """Bollinger Band squeeze breakout strategy"""
+        signals = []
+        
+        if len(data) < 30:
+            return signals
+        
+        try:
+            # Calculate Bollinger Bands - FIXED: Proper assignment
+            bb_data = self.calculate_bollinger_bands(data)
+            data['bb_middle'] = bb_data['bb_middle']
+            data['bb_upper'] = bb_data['bb_upper']
+            data['bb_lower'] = bb_data['bb_lower']
+            
+            current_price = float(data['Close'].iloc[-1])
+            bb_upper = float(data['bb_upper'].iloc[-1])
+            bb_lower = float(data['bb_lower'].iloc[-1])
+            bb_middle = float(data['bb_middle'].iloc[-1])
+            bb_width = (bb_upper - bb_lower) / bb_middle
+            
+            # Squeeze conditions (low volatility)
+            is_squeeze = bb_width < 0.05  # 5% band width
+            
+            # Volume for confirmation
+            volume_ma = float(data['Volume'].rolling(20).mean().iloc[-1])
+            volume_ratio = float(data['Volume'].iloc[-1]) / volume_ma
+            
+            if is_squeeze and volume_ratio > 1.2:
+                # Impending breakout
+                if current_price > bb_middle:
+                    # Bullish bias
+                    stop_loss = bb_lower
+                    tf_multiplier = self.get_timeframe_multiplier(timeframe)
+                    
+                    target1 = bb_upper
+                    target2 = current_price + (bb_upper - bb_lower)
+                    target3 = target2 + (bb_upper - bb_lower)
+                    
+                    reasoning = (
+                        f"Bollinger Squeeze (Bullish) on {timeframe}. "
+                        f"Band width: {bb_width:.3f}, Volume: {volume_ratio:.1f}x. "
+                        f"Expecting bullish breakout"
+                    )
+                    
+                    signal = TradingSignal(
+                        symbol=symbol,
+                        action="BUY",
+                        strategy="Bollinger Band Squeeze",
+                        timeframe=timeframe,
+                        entry=current_price,
+                        stop_loss=stop_loss,
+                        target1=target1,
+                        target2=target2,
+                        target3=target3,
+                        confidence=0.65,
+                        risk_reward=3.0,
+                        timestamp=datetime.now(),
+                        reasoning=reasoning
+                    )
+                    signals.append(signal)
+                
+                elif current_price < bb_middle:
+                    # Bearish bias
+                    stop_loss = bb_upper
+                    tf_multiplier = self.get_timeframe_multiplier(timeframe)
+                    
+                    target1 = bb_lower
+                    target2 = current_price - (bb_upper - bb_lower)
+                    target3 = target2 - (bb_upper - bb_lower)
+                    
+                    reasoning = (
+                        f"Bollinger Squeeze (Bearish) on {timeframe}. "
+                        f"Band width: {bb_width:.3f}, Volume: {volume_ratio:.1f}x. "
+                        f"Expecting bearish breakdown"
+                    )
+                    
+                    signal = TradingSignal(
+                        symbol=symbol,
+                        action="SELL",
+                        strategy="Bollinger Band Squeeze",
+                        timeframe=timeframe,
+                        entry=current_price,
+                        stop_loss=stop_loss,
+                        target1=target1,
+                        target2=target2,
+                        target3=target3,
+                        confidence=0.60,
+                        risk_reward=3.0,
+                        timestamp=datetime.now(),
+                        reasoning=reasoning
+                    )
+                    signals.append(signal)
+        except Exception as e:
+            pass
+        
+        return signals
+    
+    def market_profile_strategy(self, symbol: str, data: pd.DataFrame, timeframe: str) -> List[TradingSignal]:
+        """Market profile based strategy"""
+        signals = []
+        
+        if len(data) < 50:
+            return signals
+        
+        try:
+            # Calculate market profile levels
+            data = self.calculate_market_profile(data)
+            current_price = float(data['Close'].iloc[-1])
+            
+            poc = float(data['poc'].iloc[-1])  # Point of Control
+            value_area_high = float(data['value_area_high'].iloc[-1])
+            value_area_low = float(data['value_area_low'].iloc[-1])
+            
+            # Market profile signals - FIXED: Explicit boolean comparisons
+            breakout_condition = (current_price > value_area_high and current_price > poc)
+            
+            if breakout_condition:
+                # Price above value area - potential breakout
+                stop_loss = value_area_high
+                tf_multiplier = self.get_timeframe_multiplier(timeframe)
+                
+                target1 = current_price * (1 + 0.01 * tf_multiplier)
+                target2 = current_price * (1 + 0.02 * tf_multiplier)
+                target3 = current_price * (1 + 0.03 * tf_multiplier)
+                
+                reasoning = (
+                    f"Market Profile Breakout on {timeframe}. "
+                    f"Price above value area. POC: {poc:.2f}, "
+                    f"Value Area: {value_area_low:.2f}-{value_area_high:.2f}"
+                )
+                
+                signal = TradingSignal(
+                    symbol=symbol,
+                    action="BUY",
+                    strategy="Market Profile",
+                    timeframe=timeframe,
+                    entry=current_price,
+                    stop_loss=stop_loss,
+                    target1=target1,
+                    target2=target2,
+                    target3=target3,
+                    confidence=0.70,
+                    risk_reward=2.0,
+                    timestamp=datetime.now(),
+                    reasoning=reasoning
+                )
+                signals.append(signal)
+            
+            breakdown_condition = (current_price < value_area_low and current_price < poc)
+            
+            if breakdown_condition:
+                # Price below value area - potential breakdown
+                stop_loss = value_area_low
+                tf_multiplier = self.get_timeframe_multiplier(timeframe)
+                
+                target1 = current_price * (1 - 0.01 * tf_multiplier)
+                target2 = current_price * (1 - 0.02 * tf_multiplier)
+                target3 = current_price * (1 - 0.03 * tf_multiplier)
+                
+                reasoning = (
+                    f"Market Profile Breakdown on {timeframe}. "
+                    f"Price below value area. POC: {poc:.2f}, "
+                    f"Value Area: {value_area_low:.2f}-{value_area_high:.2f}"
+                )
+                
+                signal = TradingSignal(
+                    symbol=symbol,
+                    action="SELL",
+                    strategy="Market Profile",
+                    timeframe=timeframe,
+                    entry=current_price,
+                    stop_loss=stop_loss,
+                    target1=target1,
+                    target2=target2,
+                    target3=target3,
+                    confidence=0.65,
+                    risk_reward=2.0,
+                    timestamp=datetime.now(),
+                    reasoning=reasoning
+                )
+                signals.append(signal)
+        except Exception as e:
+            pass
+        
+        return signals
+    
+    def enhance_signals_with_ml(self, signals: List[TradingSignal], symbol: str) -> List[TradingSignal]:
+        """Enhance signals with ML-based confidence scoring"""
+        if not signals:
+            return signals
+        
+        enhanced_signals = []
+        
+        for signal in signals:
+            # Extract features for ML model
+            features = self.extract_ml_features(signal, symbol)
+            
+            if features:
+                try:
+                    # Normalize features
+                    features_normalized = self.scaler.transform([features])
+                    
+                    # Get ML prediction (placeholder - would need trained model)
+                    ml_confidence = 0.5  # Base confidence
+                    
+                    # Enhance confidence based on ML
+                    enhanced_confidence = min(signal.confidence * (1 + ml_confidence), 0.95)
+                    signal.confidence = enhanced_confidence
+                    
+                    # Add ML reasoning
+                    signal.reasoning += f" | ML Enhanced Confidence: {ml_confidence:.2f}"
+                except Exception as e:
+                    pass
+            
+            enhanced_signals.append(signal)
+        
+        return enhanced_signals
+    
+    def extract_ml_features(self, signal: TradingSignal, symbol: str) -> Optional[List[float]]:
+        """Extract features for ML model"""
+        try:
+            # Get recent data for feature extraction
+            data = data_manager.get_multi_timeframe_data(symbol, signal.timeframe)
+            if data.empty or len(data) < 20:
+                return None
+            
+            features = [
+                signal.confidence,
+                float(data['Close'].pct_change(5).iloc[-1]) if len(data) > 5 else 0,  # 5-period return
+                float(data['Close'].pct_change(10).iloc[-1]) if len(data) > 10 else 0, # 10-period return
+                float(data['Volume'].iloc[-1]) / float(data['Volume'].rolling(20).mean().iloc[-1]) if len(data) > 20 else 1,  # Volume ratio
+                float(self.calculate_rsi(data).iloc[-1]) if len(data) > 14 else 50,  # RSI
+                float(self.calculate_atr(data).iloc[-1]) / float(data['Close'].iloc[-1]) if len(data) > 14 else 0,  # Normalized ATR
+            ]
+            
+            return features
+            
+        except Exception as e:
+            return None
+    
+    def get_timeframe_multiplier(self, timeframe: str) -> float:
+        """Get multiplier for target calculations based on timeframe"""
+        multipliers = {
+            '1m': 0.5, '5m': 1.0, '15m': 1.5, 
+            '30m': 2.0, '1h': 3.0, '4h': 5.0, '1d': 8.0
+        }
+        return multipliers.get(timeframe, 1.0)
+    
+    def calculate_rsi(self, data: pd.DataFrame, period: int = 14) -> pd.Series:
+        """Calculate RSI indicator"""
+        delta = data['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
+    
+    def calculate_atr(self, data: pd.DataFrame, period: int = 14) -> pd.Series:
+        """Calculate Average True Range"""
+        high_low = data['High'] - data['Low']
+        high_close = np.abs(data['High'] - data['Close'].shift())
+        low_close = np.abs(data['Low'] - data['Close'].shift())
+        
+        true_range = np.maximum(np.maximum(high_low, high_close), low_close)
+        atr = true_range.rolling(window=period).mean()
+        return atr
+    
+    def calculate_vwap(self, data: pd.DataFrame) -> pd.Series:
+        """Calculate Volume Weighted Average Price"""
+        typical_price = (data['High'] + data['Low'] + data['Close']) / 3
+        vwap = (typical_price * data['Volume']).cumsum() / data['Volume'].cumsum()
+        return vwap
+    
+    def calculate_bollinger_bands(self, data: pd.DataFrame, period: int = 20, std: int = 2) -> pd.DataFrame:
+        """Calculate Bollinger Bands"""
+        middle_band = data['Close'].rolling(window=period).mean()
+        std_dev = data['Close'].rolling(window=period).std()
+        
+        upper_band = middle_band + (std_dev * std)
+        lower_band = middle_band - (std_dev * std)
+        
+        return pd.DataFrame({
+            'bb_middle': middle_band,
+            'bb_upper': upper_band,
+            'bb_lower': lower_band
         })
-    def display_trade_history(self):
-        st.markdown("## 📝 Trade History")
-        if st.session_state.trade_log:
-            df = pd.DataFrame(st.session_state.trade_log).sort_values('timestamp', ascending=False)
-            # Ensure execution_time is visible (already present)
-            st.dataframe(df.head(400), use_container_width=True)
-            csv = df.to_csv(index=False)
-            st.download_button("Download Trade History CSV", data=csv, file_name=f"trade_history_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", mime="text/csv")
-            # Also show a simple tabulation of executions by time
-            st.markdown("### Execution Times (recent)")
-            exec_df = df[['execution_time','symbol','action','quantity','price']].dropna().head(50)
-            st.dataframe(exec_df, use_container_width=True)
+    
+    def calculate_volume_profile_levels(self, data: pd.DataFrame, num_levels: int = 3) -> pd.DataFrame:
+        """Calculate volume profile support/resistance levels"""
+        # Simplified volume profile calculation
+        data['typical_price'] = (data['High'] + data['Low'] + data['Close']) / 3
+        
+        # Calculate support and resistance based on recent price action
+        data['resistance'] = data['High'].rolling(window=20).max()
+        data['support'] = data['Low'].rolling(window=20).min()
+        
+        return data
+    
+    def calculate_market_profile(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Calculate simplified market profile levels"""
+        # Simplified market profile implementation
+        typical_price = (data['High'] + data['Low'] + data['Close']) / 3
+        
+        # Calculate Point of Control (POC) as VWAP
+        data['poc'] = self.calculate_vwap(data)
+        
+        # Calculate value area (simplified)
+        data['value_area_high'] = data['High'].rolling(window=20).mean() + data['High'].rolling(window=20).std()
+        data['value_area_low'] = data['Low'].rolling(window=20).mean() - data['Low'].rolling(window=20).std()
+        
+        return data
+
+# Enhanced Data Manager with Multi-Timeframe Support
+class DataManager:
+    def __init__(self):
+        self.symbols = {
+            'Forex': ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X', 'USDCHF=X'],
+            'Crypto': ['BTC-USD', 'ETH-USD', 'ADA-USD', 'DOT-USD', 'LINK-USD', 'XRP-USD', 'SOL-USD'],  # Added SOL
+            'Indices': ['^GSPC', '^DJI', '^IXIC', '^FTSE', '^GDAXI'],
+            'Commodities': ['GC=F', 'SI=F', 'CL=F', 'NG=F']
+        }
+        
+        self.timeframes = ['5m', '15m', '30m', '1h', '4h', '1d']
+        self.data_cache = {}
+        self.cache_duration = timedelta(minutes=5)
+    
+    def get_multi_timeframe_data(self, symbol: str, timeframe: str) -> pd.DataFrame:
+        """Get data for specific symbol and timeframe"""
+        cache_key = f"{symbol}_{timeframe}"
+        
+        # Check cache
+        if cache_key in self.data_cache:
+            cached_data, timestamp = self.data_cache[cache_key]
+            if datetime.now() - timestamp < self.cache_duration:
+                return cached_data.copy()
+        
+        try:
+            # Get data from yfinance
+            period = self.get_period_for_timeframe(timeframe)
+            data = yf.download(symbol, period=period, interval=timeframe, progress=False)
+            
+            if not data.empty:
+                # Ensure proper column names
+                data.columns = [col[0] if isinstance(col, tuple) else col for col in data.columns]
+                data = data[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+                
+                # Cache the data
+                self.data_cache[cache_key] = (data.copy(), datetime.now())
+                return data.copy()
+            else:
+                return pd.DataFrame()
+                
+        except Exception as e:
+            return pd.DataFrame()
+    
+    def get_period_for_timeframe(self, timeframe: str) -> str:
+        """Get appropriate period for timeframe"""
+        periods = {
+            '1m': '7d', '5m': '60d', '15m': '60d',
+            '30m': '60d', '1h': '730d', '4h': '730d', '1d': 'max'
+        }
+        return periods.get(timeframe, '60d')
+    
+    def get_all_symbols(self) -> List[str]:
+        """Get all available symbols"""
+        all_symbols = []
+        for category in self.symbols:
+            all_symbols.extend(self.symbols[category])
+        return all_symbols
+
+# Enhanced Paper Trading Engine
+class PaperTradingEngine:
+    def __init__(self, initial_balance: float = 10000.0):
+        self.initial_balance = initial_balance
+        self.balance = initial_balance
+        self.positions = {}
+        self.trade_history = []
+        self.open_trades = []
+        self.closed_trades = []
+        self.performance_metrics = {}
+        
+    def execute_trade(self, signal: TradingSignal, quantity: int = None) -> Optional[PaperTrade]:
+        """Execute a paper trade based on signal"""
+        try:
+            if quantity is None:
+                # Auto-calculate quantity based on risk management
+                quantity = self.calculate_position_size(signal)
+            
+            if quantity <= 0:
+                return None
+            
+            trade_id = f"TRADE_{len(self.trade_history) + 1:06d}"
+            
+            trade = PaperTrade(
+                id=trade_id,
+                symbol=signal.symbol,
+                action=signal.action,
+                entry_price=signal.entry,
+                entry_time=datetime.now(),
+                stop_loss=signal.stop_loss,
+                targets=signal.targets,
+                quantity=quantity,
+                strategy=signal.strategy,
+                timeframe=signal.timeframe,
+                signal_confidence=signal.confidence,
+                status="OPEN"
+            )
+            
+            # Update signal with trade ID
+            signal.trade_id = trade_id
+            signal.executed = True
+            
+            # Calculate position value
+            position_value = signal.entry * quantity
+            
+            # Check if we have enough balance
+            if position_value > self.balance:
+                return None
+            
+            # Deduct from balance
+            self.balance -= position_value
+            
+            # Add to open trades and positions
+            self.open_trades.append(trade)
+            self.positions[signal.symbol] = trade
+            self.trade_history.append(trade)
+            
+            return trade
+            
+        except Exception as e:
+            return None
+    
+    def close_trade(self, trade_id: str, exit_price: float, exit_reason: str) -> bool:
+        """Close a paper trade"""
+        try:
+            trade = next((t for t in self.open_trades if t.id == trade_id), None)
+            if not trade:
+                return False
+            
+            # Calculate P&L
+            if trade.action == "BUY":
+                pnl = (exit_price - trade.entry_price) * trade.quantity
+            else:  # SELL
+                pnl = (trade.entry_price - exit_price) * trade.quantity
+            
+            pnl_percent = (pnl / (trade.entry_price * trade.quantity)) * 100
+            
+            # Update trade
+            trade.exit_price = exit_price
+            trade.exit_time = datetime.now()
+            trade.exit_reason = exit_reason
+            trade.pnl = pnl
+            trade.pnl_percent = pnl_percent
+            trade.status = "CLOSED"
+            
+            # Update balance
+            self.balance += (trade.entry_price * trade.quantity) + pnl
+            
+            # Move to closed trades
+            self.open_trades.remove(trade)
+            self.closed_trades.append(trade)
+            
+            # Remove from positions
+            if trade.symbol in self.positions:
+                del self.positions[trade.symbol]
+            
+            return True
+            
+        except Exception as e:
+            return False
+    
+    def calculate_position_size(self, signal: TradingSignal) -> int:
+        """Calculate position size based on risk management"""
+        try:
+            # Risk per trade (1% of balance)
+            risk_amount = self.balance * 0.01
+            
+            # Calculate risk per share
+            if signal.action == "BUY":
+                risk_per_share = signal.entry - signal.stop_loss
+            else:  # SELL
+                risk_per_share = signal.stop_loss - signal.entry
+            
+            if risk_per_share <= 0:
+                return 0
+            
+            # Calculate shares based on risk
+            shares = int(risk_amount / risk_per_share)
+            
+            # Ensure we don't exceed available balance
+            max_shares_by_balance = int(self.balance / signal.entry)
+            shares = min(shares, max_shares_by_balance)
+            
+            return max(1, shares)  # At least 1 share
+            
+        except Exception as e:
+            return 0
+    
+    def update_trades(self, current_prices: Dict[str, float]):
+        """Update open trades with current prices and check for exits"""
+        for trade in self.open_trades[:]:  # Use slice copy for safe removal
+            if trade.symbol not in current_prices:
+                continue
+            
+            current_price = current_prices[trade.symbol]
+            
+            # Check stop loss
+            if ((trade.action == "BUY" and current_price <= trade.stop_loss) or
+                (trade.action == "SELL" and current_price >= trade.stop_loss)):
+                self.close_trade(trade.id, current_price, "Stop Loss Hit")
+                continue
+            
+            # Check targets
+            for i, target in enumerate(trade.targets):
+                if ((trade.action == "BUY" and current_price >= target) or
+                    (trade.action == "SELL" and current_price <= target)):
+                    self.close_trade(trade.id, current_price, f"Target {i+1} Hit")
+                    break
+    
+    def get_performance_metrics(self) -> Dict:
+        """Calculate performance metrics"""
+        if not self.closed_trades:
+            return {}
+        
+        try:
+            winning_trades = [t for t in self.closed_trades if t.pnl and t.pnl > 0]
+            losing_trades = [t for t in self.closed_trades if t.pnl and t.pnl <= 0]
+            
+            total_trades = len(self.closed_trades)
+            winning_count = len(winning_trades)
+            losing_count = len(losing_trades)
+            
+            win_rate = (winning_count / total_trades) * 100 if total_trades > 0 else 0
+            
+            total_pnl = sum(t.pnl for t in self.closed_trades if t.pnl)
+            avg_profit = np.mean([t.pnl for t in winning_trades]) if winning_trades else 0
+            avg_loss = np.mean([t.pnl for t in losing_trades]) if losing_trades else 0
+            
+            profit_factor = abs(avg_profit / avg_loss) if avg_loss != 0 else float('inf')
+            
+            # Calculate max drawdown
+            equity_curve = []
+            running_balance = self.initial_balance
+            
+            for trade in sorted(self.closed_trades, key=lambda x: x.exit_time):
+                running_balance += trade.pnl if trade.pnl else 0
+                equity_curve.append(running_balance)
+            
+            if equity_curve:
+                running_max = np.maximum.accumulate(equity_curve)
+                drawdowns = (equity_curve - running_max) / running_max
+                max_drawdown = np.min(drawdowns) * 100 if len(drawdowns) > 0 else 0
+            else:
+                max_drawdown = 0
+            
+            # Sharpe ratio (simplified)
+            returns = [t.pnl_percent for t in self.closed_trades if t.pnl_percent]
+            sharpe_ratio = np.mean(returns) / np.std(returns) if returns and np.std(returns) > 0 else 0
+            
+            return {
+                "total_trades": total_trades,
+                "winning_trades": winning_count,
+                "losing_trades": losing_count,
+                "win_rate": win_rate,
+                "total_pnl": total_pnl,
+                "avg_profit": avg_profit,
+                "avg_loss": avg_loss,
+                "profit_factor": profit_factor,
+                "max_drawdown": max_drawdown,
+                "sharpe_ratio": sharpe_ratio,
+                "current_balance": self.balance,
+                "overall_return": ((self.balance - self.initial_balance) / self.initial_balance) * 100
+            }
+            
+        except Exception as e:
+            return {}
+
+# Mood Gauge Class
+class MoodGauge:
+    def __init__(self):
+        self.assets = ['BTC-USD', 'ETH-USD', 'SOL-USD', 'XRP-USD', 'GC=F']  # BTC, ETH, SOL, XRP, Gold
+        
+    def calculate_mood_score(self, symbol: str) -> float:
+        """Calculate mood score for an asset (0-100)"""
+        try:
+            # Get 1h data for mood calculation
+            data = data_manager.get_multi_timeframe_data(symbol, '1h')
+            if data.empty or len(data) < 20:
+                return 50.0
+            
+            # Calculate various indicators for mood
+            current_price = float(data['Close'].iloc[-1])
+            
+            # RSI
+            rsi = strategy_manager.calculate_rsi(data).iloc[-1]
+            
+            # Price momentum (5-period vs 20-period)
+            ma_5 = float(data['Close'].rolling(5).mean().iloc[-1])
+            ma_20 = float(data['Close'].rolling(20).mean().iloc[-1])
+            price_vs_ma = (current_price - ma_20) / ma_20 * 100
+            
+            # Volume analysis
+            current_volume = float(data['Volume'].iloc[-1])
+            avg_volume = float(data['Volume'].rolling(20).mean().iloc[-1])
+            volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1
+            
+            # Volatility (recent vs historical)
+            recent_vol = float(data['Close'].pct_change().tail(5).std() * np.sqrt(252))
+            historical_vol = float(data['Close'].pct_change().std() * np.sqrt(252))
+            vol_ratio = recent_vol / historical_vol if historical_vol > 0 else 1
+            
+            # Calculate mood score components
+            rsi_score = max(0, min(100, (rsi - 30) / 40 * 100))  # Normalize RSI 30-70 to 0-100
+            trend_score = max(0, min(100, 50 + price_vs_ma * 2))  # Price vs MA20
+            volume_score = min(100, volume_ratio * 25)  # Volume boost
+            vol_stability = max(0, min(100, 100 - (vol_ratio - 1) * 50))  # Lower volatility = higher score
+            
+            # Weighted mood score
+            mood_score = (
+                rsi_score * 0.3 +
+                trend_score * 0.3 +
+                volume_score * 0.2 +
+                vol_stability * 0.2
+            )
+            
+            return max(0, min(100, mood_score))
+            
+        except Exception as e:
+            return 50.0
+    
+    def get_mood_label(self, score: float) -> Tuple[str, str]:
+        """Get mood label and color based on score"""
+        if score >= 80:
+            return "Very Bullish", "#10b981"
+        elif score >= 60:
+            return "Bullish", "#34d399"
+        elif score >= 40:
+            return "Neutral", "#fbbf24"
+        elif score >= 20:
+            return "Bearish", "#f87171"
         else:
-            st.info("No trades yet.")
-    def setup_sidebar(self):
-        st.sidebar.title("🎯 Controls")
-        s = st.sidebar.selectbox("Chart Symbol", options=list(self.dm.symbols.keys()), format_func=lambda x: f"{x} - {self.dm.symbols[x]}")
-        st.session_state.chart_symbol = s
-        interval = st.sidebar.selectbox("Chart Timeframe", options=CHART_INTERVALS, index=CHART_INTERVALS.index(st.session_state.chart_interval))
-        if interval != st.session_state.chart_interval:
-            st.session_state.chart_interval = interval
-            st.experimental_rerun()
-        st.sidebar.markdown("---")
-        st.sidebar.markdown(f"**UI Refresh rate:** {REFRESH_INTERVAL}s")
-        st.sidebar.markdown(f"**Signal gen rate:** {SIGNAL_GEN_INTERVAL}s")
-        st.sidebar.markdown(f"**Refresh count:** {st.session_state.refresh_count}")
-        st.sidebar.markdown(f"**Last refresh:** {st.session_state.last_refresh.strftime('%H:%M:%S')}")
-        if st.sidebar.button("🔄 Reset Portfolio"):
-            self.pt.reset()
-            st.sidebar.success("Portfolio reset to initial balance.")
-            st.experimental_rerun()
-        if st.sidebar.button("🎯 Generate Signals Now"):
-            with st.sidebar.spinner("Generating signals..."):
-                self.generate_all_signals()
-            st.sidebar.success(f"Generated {len(st.session_state.signals)} signals")
-            st.experimental_rerun()
-    def run_terminal(self):
-        st.set_page_config(page_title="Trading Terminal - Auto 15s / Signals 30s", page_icon="🚀", layout="wide", initial_sidebar_state="expanded")
-        st.title("🚀 Trading Terminal — Auto-refresh 15s • Signals 30s • Auto-execute")
-        st.markdown("*UI refresh every 15s • Signals generated every 30s • Auto-execute new signals (no duplicates)*")
-        # Check and execute auto-refresh, signals, and auto-trading
-        self.check_auto_refresh()
-        self.setup_sidebar()
-        t1, t2, t3, t4, t5, t6, t7 = st.tabs(["Live Charts", "Market", "Signals", "Portfolio", "Auto-Trading", "News", "History"])
-        with t1:
-            st.info("Live Charts rendering omitted in this concise file; use your original chart function if needed.")
-        with t2:
-            st.info("Market overview omitted for brevity.")
-        with t3:
-            self.display_trading_signals()
-        with t4:
-            self.display_portfolio()
-        with t5:
-            self.display_auto_trading()
-        with t6:
-            st.markdown("## 📰 News (placeholder)")
-            st.info("News feed integration not yet implemented.")
-        with t7:
-            self.display_trade_history()
+            return "Very Bearish", "#ef4444"
+    
+    def create_gauge_chart(self, symbol: str, score: float) -> go.Figure:
+        """Create a gauge chart for mood visualization"""
+        label, color = self.get_mood_label(score)
+        
+        fig = go.Figure(go.Indicator(
+            mode = "gauge+number+delta",
+            value = score,
+            domain = {'x': [0, 1], 'y': [0, 1]},
+            title = {'text': f"{symbol} Mood", 'font': {'size': 16}},
+            delta = {'reference': 50, 'increasing': {'color': color}},
+            gauge = {
+                'axis': {'range': [None, 100], 'tickwidth': 1, 'tickcolor': "darkblue"},
+                'bar': {'color': color},
+                'bgcolor': "white",
+                'borderwidth': 2,
+                'bordercolor': "gray",
+                'steps': [
+                    {'range': [0, 20], 'color': '#fef2f2'},
+                    {'range': [20, 40], 'color': '#fecaca'},
+                    {'range': [40, 60], 'color': '#fef3c7'},
+                    {'range': [60, 80], 'color': '#d1fae5'},
+                    {'range': [80, 100], 'color': '#ecfdf5'}],
+                'threshold': {
+                    'line': {'color': "red", 'width': 4},
+                    'thickness': 0.75,
+                    'value': 90}}))
+        
+        fig.update_layout(
+            height=250,
+            margin=dict(l=20, r=20, t=50, b=20),
+            font={'color': "darkblue", 'family': "Arial"}
+        )
+        
+        return fig
+
+# Initialize global components
+data_manager = DataManager()
+strategy_manager = StrategyManager()
+paper_trading = PaperTradingEngine()
+signal_history = SignalHistoryManager()
+mood_gauge = MoodGauge()
+
+# Enhanced Streamlit UI with Auto-Refresh
+def main():
+    st.set_page_config(
+        page_title="Multi-Timeframe Crypto & Forex Trading Terminal",
+        page_icon="📊",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+    
+    # Custom CSS with enhanced styling
+    st.markdown("""
+    <style>
+    .main-header {
+        font-size: 2.5rem;
+        color: #1f77b4;
+        text-align: center;
+        margin-bottom: 1rem;
+        background: linear-gradient(90deg, #1f77b4, #ff7f0e);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-weight: bold;
+    }
+    .sub-header {
+        font-size: 1.5rem;
+        color: #2e86ab;
+        border-bottom: 2px solid #2e86ab;
+        padding-bottom: 0.5rem;
+        margin-top: 1.5rem;
+    }
+    .signal-card {
+        padding: 1rem;
+        border-radius: 15px;
+        margin: 0.5rem 0;
+        border-left: 5px solid;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        transition: transform 0.2s;
+    }
+    .signal-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 8px rgba(0, 0, 0, 0.15);
+    }
+    .buy-signal {
+        border-color: #28a745;
+        background: linear-gradient(135deg, rgba(40, 167, 69, 0.1), rgba(40, 167, 69, 0.05));
+    }
+    .sell-signal {
+        border-color: #dc3545;
+        background: linear-gradient(135deg, rgba(220, 53, 69, 0.1), rgba(220, 53, 69, 0.05));
+    }
+    .metric-card {
+        padding: 1rem;
+        border-radius: 10px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        margin: 0.5rem 0;
+        text-align: center;
+    }
+    .mood-gauge-container {
+        background: white;
+        border-radius: 15px;
+        padding: 1rem;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        margin: 0.5rem 0;
+    }
+    .time-display {
+        font-size: 1.2rem;
+        color: #6c757d;
+        text-align: center;
+        margin-bottom: 1rem;
+        font-weight: bold;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        white-space: pre-wrap;
+        background-color: #f0f2f6;
+        border-radius: 10px 10px 0px 0px;
+        gap: 8px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        font-weight: bold;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #2e86ab;
+        color: white;
+    }
+    .refresh-info {
+        font-size: 0.8rem;
+        color: #6c757d;
+        text-align: right;
+        background: #f8f9fa;
+        padding: 0.5rem;
+        border-radius: 5px;
+        margin-bottom: 1rem;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    st.markdown('<h1 class="main-header">Multi-Timeframe Crypto & Forex Trading Terminal</h1>', unsafe_allow_html=True)
+    
+    # Display local time
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    st.markdown(f'<div class="time-display">🕐 Local Time: {current_time}</div>', unsafe_allow_html=True)
+    
+    # Auto-refresh configuration
+    auto_refresh = st.sidebar.checkbox("Enable Auto Refresh", value=True)
+    refresh_interval = st.sidebar.slider("Refresh Interval (seconds)", 10, 120, 30)
+    
+    if auto_refresh:
+        st.markdown(f"""
+        <div class="refresh-info">
+            🔄 Auto Refresh Enabled | Next refresh in <span id="countdown">{refresh_interval}</span> seconds
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Auto-refresh JavaScript
+        st.markdown(f"""
+        <script>
+        function updateCountdown() {{
+            var countdownElement = document.getElementById('countdown');
+            if (countdownElement) {{
+                var current = parseInt(countdownElement.textContent);
+                if (current > 1) {{
+                    countdownElement.textContent = current - 1;
+                }} else {{
+                    countdownElement.textContent = {refresh_interval};
+                    // Use Streamlit's native rerun instead of experimental_rerun
+                    const event = new CustomEvent('streamlit:rerun');
+                    window.dispatchEvent(event);
+                }}
+            }}
+        }}
+        setInterval(updateCountdown, 1000);
+        </script>
+        """, unsafe_allow_html=True)
+        
+        # Add a timer to trigger rerun
+        if 'last_refresh' not in st.session_state:
+            st.session_state.last_refresh = time.time()
+        
+        if time.time() - st.session_state.last_refresh > refresh_interval:
+            st.session_state.last_refresh = time.time()
+            st.rerun()
+    
+    # Sidebar Configuration
+    st.sidebar.header("⚙️ Configuration")
+    
+    # Market selection
+    market_category = st.sidebar.selectbox(
+        "Select Market Category",
+        ["Forex", "Crypto", "Indices", "Commodities"]
+    )
+    
+    selected_symbols = st.sidebar.multiselect(
+        "Select Symbols",
+        data_manager.symbols[market_category],
+        default=data_manager.symbols[market_category][:3]
+    )
+    
+    # Strategy selection
+    selected_strategies = st.sidebar.multiselect(
+        "Select Strategies",
+        list(strategy_manager.strategies.keys()),
+        default=list(strategy_manager.strategies.keys())[:3]
+    )
+    
+    # Timeframe selection
+    selected_timeframes = st.sidebar.multiselect(
+        "Select Timeframes",
+        strategy_manager.timeframes,
+        default=['15m', '1h', '4h']
+    )
+    
+    # Auto-trading configuration
+    st.sidebar.header("🤖 Auto Trading")
+    enable_auto_trading = st.sidebar.checkbox("Enable Auto Trading", value=False)
+    min_confidence = st.sidebar.slider("Minimum Confidence", 0.1, 1.0, 0.7)
+    max_trades_per_day = st.sidebar.number_input("Max Trades Per Day", 1, 50, 10)
+    
+    # Risk Management
+    st.sidebar.header("🛡️ Risk Management")
+    risk_per_trade = st.sidebar.slider("Risk Per Trade (%)", 0.1, 5.0, 1.0)
+    paper_trading.initial_balance = st.sidebar.number_input("Initial Balance", 1000, 100000, 10000)
+    
+    # Main Tabs with enhanced styling
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "📈 Live Dashboard", 
+        "⚡ Trading Signals", 
+        "💼 Paper Trading", 
+        "📊 Performance",
+        "📋 Signal History",
+        "😊 Market Mood"
+    ])
+    
+    # Tab 1: Live Dashboard
+    with tab1:
+        st.markdown('<div class="sub-header">Live Market Dashboard</div>', unsafe_allow_html=True)
+        
+        if not selected_symbols:
+            st.warning("Please select at least one symbol.")
+            return
+        
+        # Generate signals for selected symbols
+        all_signals = []
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for i, symbol in enumerate(selected_symbols):
+            status_text.text(f"Analyzing {symbol}...")
+            
+            # Run multi-timeframe analysis
+            signals = strategy_manager.run_multi_timeframe_analysis(symbol)
+            all_signals.extend(signals)
+            
+            progress_bar.progress((i + 1) / len(selected_symbols))
+        
+        status_text.text("Analysis complete!")
+        
+        # Filter signals based on user selection
+        filtered_signals = [
+            s for s in all_signals 
+            if s.strategy in selected_strategies and s.timeframe in selected_timeframes
+        ]
+        
+        # Display quick overview
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Signals", len(filtered_signals))
+        
+        with col2:
+            buy_signals = len([s for s in filtered_signals if s.action == "BUY"])
+            st.metric("Buy Signals", buy_signals)
+        
+        with col3:
+            sell_signals = len([s for s in filtered_signals if s.action == "SELL"])
+            st.metric("Sell Signals", sell_signals)
+        
+        with col4:
+            high_confidence = len([s for s in filtered_signals if s.confidence > 0.8])
+            st.metric("High Confidence", high_confidence)
+        
+        # Display signals in two columns
+        st.markdown('<div class="sub-header">Recent Trading Signals</div>', unsafe_allow_html=True)
+        
+        if filtered_signals:
+            # Sort by confidence (descending)
+            filtered_signals.sort(key=lambda x: x.confidence, reverse=True)
+            
+            # Display in columns
+            cols = st.columns(2)
+            for i, signal in enumerate(filtered_signals[:10]):  # Show top 10
+                with cols[i % 2]:
+                    display_signal(signal)
+        else:
+            st.info("No trading signals found for the current selection.")
+    
+    # Tab 2: Trading Signals
+    with tab2:
+        st.markdown('<div class="sub-header">Advanced Signal Analysis</div>', unsafe_allow_html=True)
+        
+        if not filtered_signals:
+            st.info("No signals to display. Run analysis in Live Dashboard tab first.")
+        else:
+            # Signal filtering
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                min_conf_filter = st.slider("Min Confidence Filter", 0.0, 1.0, 0.6, key="conf_filter")
+            
+            with col2:
+                action_filter = st.selectbox("Action Filter", ["All", "BUY", "SELL"], key="action_filter")
+            
+            with col3:
+                timeframe_filter = st.multiselect(
+                    "Timeframe Filter",
+                    strategy_manager.timeframes,
+                    default=selected_timeframes,
+                    key="timeframe_filter"
+                )
+            
+            # Apply filters
+            filtered_display_signals = [
+                s for s in filtered_signals 
+                if s.confidence >= min_conf_filter and
+                (action_filter == "All" or s.action == action_filter) and
+                s.timeframe in timeframe_filter
+            ]
+            
+            # Display filtered signals
+            st.markdown(f'<div class="sub-header">Filtered Signals ({len(filtered_display_signals)})</div>', unsafe_allow_html=True)
+            
+            for signal in filtered_display_signals:
+                display_signal(signal)
+    
+    # Tab 3: Paper Trading
+    with tab3:
+        st.markdown('<div class="sub-header">Paper Trading Dashboard</div>', unsafe_allow_html=True)
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Current Balance", f"${paper_trading.balance:.2f}")
+        
+        with col2:
+            st.metric("Open Trades", len(paper_trading.open_trades))
+        
+        with col3:
+            st.metric("Closed Trades", len(paper_trading.closed_trades))
+        
+        with col4:
+            overall_return = ((paper_trading.balance - paper_trading.initial_balance) / paper_trading.initial_balance) * 100
+            st.metric("Overall Return", f"{overall_return:.2f}%")
+        
+        # Open Trades
+        st.markdown('<div class="sub-header">Open Trades</div>', unsafe_allow_html=True)
+        if paper_trading.open_trades:
+            open_trades_data = []
+            for trade in paper_trading.open_trades:
+                open_trades_data.append({
+                    "ID": trade.id,
+                    "Symbol": trade.symbol,
+                    "Action": trade.action,
+                    "Entry Price": trade.entry_price,
+                    "Stop Loss": trade.stop_loss,
+                    "Targets": str([f"{t:.4f}" for t in trade.targets]),
+                    "Quantity": trade.quantity,
+                    "Strategy": trade.strategy,
+                    "Timeframe": trade.timeframe
+                })
+            
+            st.dataframe(pd.DataFrame(open_trades_data), use_container_width=True)
+        else:
+            st.info("No open trades")
+    
+    # Tab 4: Performance Analytics
+    with tab4:
+        st.markdown('<div class="sub-header">Performance Analytics</div>', unsafe_allow_html=True)
+        
+        # Get performance metrics
+        metrics = paper_trading.get_performance_metrics()
+        
+        if metrics:
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("Win Rate", f"{metrics['win_rate']:.1f}%")
+                st.metric("Total Trades", metrics['total_trades'])
+            
+            with col2:
+                st.metric("Total P&L", f"${metrics['total_pnl']:.2f}")
+                st.metric("Profit Factor", f"{metrics['profit_factor']:.2f}")
+            
+            with col3:
+                st.metric("Avg Profit", f"${metrics['avg_profit']:.2f}")
+                st.metric("Avg Loss", f"${metrics['avg_loss']:.2f}")
+            
+            with col4:
+                st.metric("Max Drawdown", f"{metrics['max_drawdown']:.2f}%")
+                st.metric("Sharpe Ratio", f"{metrics['sharpe_ratio']:.2f}")
+        else:
+            st.info("No performance data available. Execute some trades first.")
+    
+    # Tab 5: Signal History
+    with tab5:
+        st.markdown('<div class="sub-header">Signal History & Strategy Accuracy</div>', unsafe_allow_html=True)
+        
+        # Strategy accuracy overview
+        accuracy_data = signal_history.get_all_strategies_accuracy(days_back=30)
+        
+        if accuracy_data:
+            accuracy_list = []
+            for strategy, data in accuracy_data.items():
+                if data['total'] > 0:
+                    accuracy_list.append({
+                        'Strategy': strategy,
+                        'Total Signals': data['total'],
+                        'Winning Signals': data['wins'],
+                        'Accuracy (%)': f"{data['accuracy']:.1f}%"
+                    })
+            
+            if accuracy_list:
+                st.dataframe(pd.DataFrame(accuracy_list), use_container_width=True)
+            else:
+                st.info("No signal history data available yet.")
+        else:
+            st.info("No signal history data available yet.")
+    
+    # Tab 6: Market Mood Gauge
+    with tab6:
+        st.markdown('<div class="sub-header">Market Mood Gauge</div>', unsafe_allow_html=True)
+        st.markdown("Real-time sentiment analysis for major assets")
+        
+        # Calculate mood scores for all assets
+        mood_scores = {}
+        for asset in mood_gauge.assets:
+            mood_scores[asset] = mood_gauge.calculate_mood_score(asset)
+        
+        # Display mood gauges in columns
+        cols = st.columns(3)
+        asset_names = {
+            'BTC-USD': 'Bitcoin',
+            'ETH-USD': 'Ethereum', 
+            'SOL-USD': 'Solana',
+            'XRP-USD': 'XRP',
+            'GC=F': 'Gold'
+        }
+        
+        for i, (asset, score) in enumerate(mood_scores.items()):
+            with cols[i % 3]:
+                label, color = mood_gauge.get_mood_label(score)
+                st.markdown(f"""
+                <div class="mood-gauge-container">
+                    <h4 style="text-align: center; margin-bottom: 1rem;">{asset_names.get(asset, asset)}</h4>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Create and display gauge chart
+                fig = mood_gauge.create_gauge_chart(asset_names.get(asset, asset), score)
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Display mood label
+                st.markdown(f"""
+                <div style="text-align: center; margin-top: -2rem;">
+                    <h3 style="color: {color}; font-weight: bold;">{label}</h3>
+                    <p style="color: #6c757d; font-size: 0.9rem;">Score: {score:.1f}/100</p>
+                </div>
+                """, unsafe_allow_html=True)
+
+def display_signal(signal: TradingSignal):
+    """Display a trading signal in a formatted card"""
+    signal_class = "buy-signal" if signal.action == "BUY" else "sell-signal"
+    signal_color = "#28a745" if signal.action == "BUY" else "#dc3545"
+    signal_icon = "🟢" if signal.action == "BUY" else "🔴"
+    
+    st.markdown(f"""
+    <div class="signal-card {signal_class}">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <h4 style="margin: 0; color: {signal_color};">{signal_icon} {signal.symbol} {signal.action} - {signal.strategy}</h4>
+                <p style="margin: 0; font-size: 0.9rem;">⏱️ {signal.timeframe} | 🎯 Confidence: {signal.confidence:.2f}</p>
+            </div>
+            <div style="text-align: right;">
+                <strong>🚦 {signal.priority}</strong>
+            </div>
+        </div>
+        <div style="margin-top: 0.5rem;">
+            <p style="margin: 0; font-size: 0.9rem;">
+                <strong>💰 Entry:</strong> {signal.entry:.4f} | 
+                <strong>🛑 SL:</strong> {signal.stop_loss:.4f} | 
+                <strong>🎯 TP1:</strong> {signal.target1:.4f}
+            </p>
+            <p style="margin: 0; font-size: 0.8rem; color: #666;">
+                <strong>💡 Reasoning:</strong> {signal.reasoning}
+            </p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
-    try:
-        term = ProfessionalTradingTerminal()
-        term.run_terminal()
-    except Exception as e:
-        st.error(f"Application error: {e}")
-        st.info("Refresh the page to restart.")
+    main()
