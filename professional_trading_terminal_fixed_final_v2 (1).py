@@ -194,7 +194,7 @@ def create_mood_gauge(score: float, title: str, price_display: str = ""):
             x=0.5, y=0.15,
             text=f"<b>{price_display}</b>",
             showarrow=False,
-            font=dict(size=25, color="black"),
+            font=dict(size=25, color="darkblue"),
             xref="paper", yref="paper"
         )
     
