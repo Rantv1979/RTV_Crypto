@@ -21,7 +21,7 @@ import uuid
 
 # ----- CONFIG -----
 FIXED_ALLOCATION = 1000.0  # $1000 per trade
-SIGNAL_REFRESH_SECONDS = 120  # 2 minutes for signals
+SIGNAL_REFRESH_SECONDS = 60  # 1 minutes for signals
 PRICE_REFRESH_SECONDS = 30  # 30 seconds for price refresh (as requested)
 
 # Market coverage
@@ -60,7 +60,7 @@ st.markdown(
     .mood-gauge-container {
         background: white;
         border-radius: 10px;
-        padding: 15px;
+        padding: 20px;
         box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         margin: 10px 0;
     }
@@ -113,8 +113,8 @@ def setup_auto_refresh():
     
     # Auto-refresh logic
     now = time.time()
-    signal_refresh_needed = (now - st.session_state.last_signal_refresh) >= SIGNAL_REFRESH_SECONDS
-    price_refresh_needed = (now - st.session_state.last_price_refresh) >= PRICE_REFRESH_SECONDS
+    signal_refresh_needed = (now - st.session_state.last_signal_refresh) >= SIGNAL_REFRESH_60_SECONDS
+    price_refresh_needed = (now - st.session_state.last_price_refresh) >= PRICE_REFRESH_30_SECONDS
     
     return signal_refresh_needed, price_refresh_needed, now
 
