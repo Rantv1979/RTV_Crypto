@@ -1486,15 +1486,25 @@ def main():
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     st.markdown(f'<div class="time-display">🕐 LOCAL TIME: {current_time} | AUTO-REFRESH: ACTIVE</div>', unsafe_allow_html=True)
     
-    # Simple Auto-refresh without JavaScript complications
+    # Simple Auto-refresh without blocking
     auto_refresh = st.sidebar.checkbox("🔄 Enable Auto Refresh", value=True)
     refresh_interval = st.sidebar.slider("⏱️ Refresh Interval (seconds)", 15, 120, 30)
     
     if auto_refresh:
-        # Use Streamlit's native auto-refresh capability
-        st.markdown(f'<div class="refresh-info">🔄 AUTO-REFRESH ACTIVE | Next update in {refresh_interval} seconds</div>', unsafe_allow_html=True)
-        time.sleep(refresh_interval)
-        st.rerun()
+        # Use session state to track refresh
+        if 'last_refresh' not in st.session_state:
+            st.session_state.last_refresh = time.time()
+        
+        current_time = time.time()
+        time_since_refresh = current_time - st.session_state.last_refresh
+        time_remaining = max(0, refresh_interval - time_since_refresh)
+        
+        st.markdown(f'<div class="refresh-info">🔄 AUTO-REFRESH ACTIVE | Next update in {int(time_remaining)} seconds</div>', unsafe_allow_html=True)
+        
+        # Only refresh when the interval has passed
+        if time_since_refresh >= refresh_interval:
+            st.session_state.last_refresh = current_time
+            st.rerun()
     
     # Sidebar Configuration
     st.sidebar.header("⚙️ CONFIGURATION")
