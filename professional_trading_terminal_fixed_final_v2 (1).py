@@ -113,8 +113,8 @@ def setup_auto_refresh():
     
     # Auto-refresh logic
     now = time.time()
-    signal_refresh_needed = (now - st.session_state.last_signal_refresh) >= SIGNAL_REFRESH_60_SECONDS
-    price_refresh_needed = (now - st.session_state.last_price_refresh) >= PRICE_REFRESH_30_SECONDS
+    signal_refresh_needed = (now - st.session_state.last_signal_refresh) >= SIGNAL_REFRESH_SECONDS
+    price_refresh_needed = (now - st.session_state.last_price_refresh) >= PRICE_REFRESH_SECONDS
     
     return signal_refresh_needed, price_refresh_needed, now
 
