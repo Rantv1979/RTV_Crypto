@@ -60,7 +60,7 @@ st.markdown(
     .mood-gauge-container {
         background: white;
         border-radius: 10px;
-        padding: 15px;
+        padding: 40px;
         box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         margin: 10px 0;
     }
