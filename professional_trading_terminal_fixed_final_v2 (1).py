@@ -184,6 +184,26 @@ def create_mood_gauge(score: float, title: str, price_display: str = "", symbol_
         }
     ))
     
+    # Add sentiment level annotations inside the arch
+    sentiment_levels = [
+        (12.5, "Extreme<br>Fear", '#ef4444'),
+        (35, "Fear", '#f97316'),
+        (50, "Neutral", '#fbbf24'),
+        (65, "Greed", '#84cc16'),
+        (87.5, "Extreme<br>Greed", '#10b981')
+    ]
+    
+    for position, text, color in sentiment_levels:
+        fig.add_annotation(
+            x=0.5 + 0.4 * np.cos(np.radians(180 - position * 1.8)),
+            y=0.5 + 0.4 * np.sin(np.radians(180 - position * 1.8)),
+            text=f"<b style='font-size:10px;color:{color}'>{text}</b>",
+            showarrow=False,
+            font=dict(size=10, color=color, family="Arial"),
+            xref="paper", yref="paper",
+            align="center"
+        )
+    
     # Add mood text annotation - make it more visible
     fig.add_annotation(
         x=0.5, y=0.25,
@@ -396,10 +416,12 @@ if price_refresh_needed and auto_refresh_prices:
         if price is not None:
             st.session_state.last_prices[sym] = price
     st.session_state.last_price_refresh = current_time
+    # Force rerun for price updates
+    st.rerun()
 
 # Signals refresh path (every 2 minutes or when manually requested)
 manual_refresh = st.sidebar.button("Refresh Signals Now")
-if auto_refresh_signals and signal_refresh_needed or manual_refresh:
+if (auto_refresh_signals and signal_refresh_needed) or manual_refresh:
     # Generate new signals for current selection
     new_signals = []
     for sym in selected_symbols:
@@ -418,9 +440,8 @@ if auto_refresh_signals and signal_refresh_needed or manual_refresh:
     # Update session signals and refresh timestamp
     st.session_state.signals = merged
     st.session_state.last_signal_refresh = time.time()
-    if auto_refresh_signals and signal_refresh_needed:
-        # Force a quick re-run so UI updates immediately
-        st.rerun()
+    # Force a quick re-run so UI updates immediately
+    st.rerun()
 
 # ----- Tabs -----
 tab1, tab2, tab3, tab4 = st.tabs(["Live Dashboard", "Signals", "Paper Trading", "Trade History"])
@@ -541,8 +562,23 @@ with tab2:
             
             # Execution controls
             auto_execute = st.checkbox("Auto-execute high confidence signals (>=0.7)", value=False)
-            exec_cols = st.columns([3, 1, 1])
             
+            # Auto-execute logic
+            if auto_execute:
+                executed_count = 0
+                for s in sorted(st.session_state.signals, key=lambda x: x['confidence'], reverse=True):
+                    if s['symbol'] not in selected_symbols:
+                        continue
+                    if s['confidence'] >= 0.7 and s['id'] not in st.session_state.executed_signal_ids:
+                        t = execute_paper_trade(s)
+                        if t:
+                            executed_count += 1
+                            st.success(f"Auto-executed trade {t['id']} for {t['symbol']}")
+                
+                if executed_count > 0:
+                    st.rerun()
+            
+            exec_cols = st.columns([3, 1, 1])
             with exec_cols[1]:
                 if st.button("Execute top signal"):
                     # pick highest confidence available that isn't executed
@@ -557,20 +593,6 @@ with tab2:
                             st.error("Could not execute trade (maybe allocation too small).")
                     else:
                         st.warning("No available signals to execute.")
-            
-            # Auto-execute logic
-            if auto_execute:
-                executed_count = 0
-                for s in sorted(st.session_state.signals, key=lambda x: x['confidence'], reverse=True):
-                    if s['symbol'] not in selected_symbols:
-                        continue
-                    if s['confidence'] >= 0.7 and s['id'] not in st.session_state.executed_signal_ids:
-                        t = execute_paper_trade(s)
-                        if t:
-                            executed_count += 1
-                if executed_count > 0:
-                    st.success(f"Auto-executed {executed_count} trades (fixed ${FIXED_ALLOCATION} allocation each).")
-                    st.rerun()
 
 # ----- TAB 3: Paper Trading -----
 with tab3:
