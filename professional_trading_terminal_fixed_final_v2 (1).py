@@ -777,6 +777,7 @@ class StrategyManager:
                 )
                 signals.append(signal)
             
+            # Breakdown below support with volume
             breakdown_condition = (current_price < value_area_low and current_price < poc)
             
             if breakdown_condition:
@@ -1003,6 +1004,7 @@ class DataManager:
     def get_current_price(self, symbol: str) -> float:
         """Get current price for a symbol"""
         try:
+            # Use 15m timeframe for current price as requested
             data = self.get_multi_timeframe_data(symbol, '15m')
             if not data.empty:
                 return float(data['Close'].iloc[-1])
@@ -1040,7 +1042,7 @@ class PaperTradingEngine:
                 entry_price=signal.entry,
                 entry_time=datetime.now(),
                 stop_loss=signal.stop_loss,
-                targets=signal.targets,
+                targets=[signal.target1, signal.target2, signal.target3],
                 quantity=quantity,
                 strategy=signal.strategy,
                 timeframe=signal.timeframe,
@@ -1066,6 +1068,9 @@ class PaperTradingEngine:
             self.open_trades.append(trade)
             self.positions[signal.symbol] = trade
             self.trade_history.append(trade)
+            
+            # Add to signal history
+            signal_history.add_signal(signal)
             
             return trade
             
@@ -1105,6 +1110,10 @@ class PaperTradingEngine:
             # Remove from positions
             if trade.symbol in self.positions:
                 del self.positions[trade.symbol]
+            
+            # Update signal result
+            result = "WIN" if pnl > 0 else "LOSS"
+            signal_history.update_signal_result(trade_id, result)
             
             return True
             
@@ -1217,7 +1226,7 @@ class PaperTradingEngine:
         except Exception as e:
             return {}
 
-# Mood Gauge Class with Needle-style Gauges
+# Enhanced Mood Gauge Class with Needle-style Gauges and Real Prices
 class MoodGauge:
     def __init__(self):
         self.assets = ['BTC-USD', 'ETH-USD', 'XRP-USD', 'SOL-USD', 'LTC-USD', 'GC=F', 'EURUSD=X']
@@ -1232,10 +1241,10 @@ class MoodGauge:
         }
         
     def calculate_mood_score(self, symbol: str) -> float:
-        """Calculate mood score for an asset (0-100)"""
+        """Calculate mood score for an asset (0-100) using 15m timeframe"""
         try:
-            # Get 1h data for mood calculation
-            data = data_manager.get_multi_timeframe_data(symbol, '1h')
+            # Get 15m data for mood calculation as requested
+            data = data_manager.get_multi_timeframe_data(symbol, '15m')
             if data.empty or len(data) < 20:
                 return 50.0
             
@@ -1290,16 +1299,24 @@ class MoodGauge:
             return "VERY BEARISH", "#ef4444"
     
     def create_needle_gauge(self, symbol: str, score: float, current_price: float) -> go.Figure:
-        """Create a needle-style gauge chart"""
+        """Create a needle-style gauge chart with real price display"""
         label, color = self.get_mood_label(score)
+        
+        # Format price display based on symbol type
+        if symbol in ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X']:
+            price_display = f"{current_price:.4f}"
+        elif symbol in ['GC=F']:  # Gold
+            price_display = f"${current_price:.2f}"
+        else:  # Crypto
+            price_display = f"${current_price:.2f}"
         
         fig = go.Figure(go.Indicator(
             mode = "gauge+number+delta",
             value = score,
             domain = {'x': [0, 1], 'y': [0, 1]},
             title = {
-                'text': f"{self.asset_names[symbol]}<br>${current_price:.2f}" if symbol not in ['EURUSD=X'] else f"{self.asset_names[symbol]}<br>{current_price:.4f}",
-                'font': {'size': 14, 'color': 'white'}
+                'text': f"{self.asset_names[symbol]}<br>{price_display}",
+                'font': {'size': 14, 'color': 'white', 'family': "Arial Black"}
             },
             number = {
                 'font': {'size': 20, 'color': 'white', 'family': "Arial Black"},
@@ -1335,8 +1352,8 @@ class MoodGauge:
                     'value': score}}))
         
         fig.update_layout(
-            height=200,
-            margin=dict(l=10, r=10, t=60, b=10),
+            height=220,
+            margin=dict(l=10, r=10, t=80, b=10),
             paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(0,0,0,0)',
             font={'color': "white", 'family': "Arial"}
@@ -1351,7 +1368,7 @@ paper_trading = PaperTradingEngine()
 signal_history = SignalHistoryManager()
 mood_gauge = MoodGauge()
 
-# Enhanced Streamlit UI with Fixed Auto-Refresh
+# Enhanced Streamlit UI with Fixed Auto-Refresh and Auto-Trading
 def main():
     st.set_page_config(
         page_title="Multi-Timeframe Trading Terminal",
@@ -1477,62 +1494,66 @@ def main():
         margin: 1rem 0;
         font-weight: 600;
     }
+    .trade-table {
+        font-size: 0.85rem;
+    }
+    .positive-pnl {
+        color: #10b981;
+        font-weight: bold;
+    }
+    .negative-pnl {
+        color: #ef4444;
+        font-weight: bold;
+    }
     </style>
     """, unsafe_allow_html=True)
     
     st.markdown('<h1 class="main-header">🚀 MULTI-TIMEFRAME TRADING TERMINAL</h1>', unsafe_allow_html=True)
     
+    # Initialize session state for auto-refresh
+    if 'last_refresh' not in st.session_state:
+        st.session_state.last_refresh = time.time()
+    if 'auto_trading_enabled' not in st.session_state:
+        st.session_state.auto_trading_enabled = False
+    if 'signals_generated' not in st.session_state:
+        st.session_state.signals_generated = []
+    
     # Display local time
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     st.markdown(f'<div class="time-display">🕐 LOCAL TIME: {current_time} | AUTO-REFRESH: ACTIVE</div>', unsafe_allow_html=True)
     
-    # Simple Auto-refresh without blocking
-    auto_refresh = st.sidebar.checkbox("🔄 Enable Auto Refresh", value=True)
-    refresh_interval = st.sidebar.slider("⏱️ Refresh Interval (seconds)", 15, 120, 30)
-    
-    if auto_refresh:
-        # Use session state to track refresh
-        if 'last_refresh' not in st.session_state:
-            st.session_state.last_refresh = time.time()
-        
-        current_time = time.time()
-        time_since_refresh = current_time - st.session_state.last_refresh
-        time_remaining = max(0, refresh_interval - time_since_refresh)
-        
-        st.markdown(f'<div class="refresh-info">🔄 AUTO-REFRESH ACTIVE | Next update in {int(time_remaining)} seconds</div>', unsafe_allow_html=True)
-        
-        # Only refresh when the interval has passed
-        if time_since_refresh >= refresh_interval:
-            st.session_state.last_refresh = current_time
-            st.rerun()
-    
     # Sidebar Configuration
     st.sidebar.header("⚙️ CONFIGURATION")
     
-    # Market selection
+    # Auto-refresh configuration
+    auto_refresh = st.sidebar.checkbox("🔄 Enable Auto Refresh", value=True)
+    refresh_interval = st.sidebar.slider("⏱️ Refresh Interval (seconds)", 15, 120, 30)
+    
+    # Market selection - AUTO SELECT ALL
     market_category = st.sidebar.selectbox(
         "📊 Select Market Category",
         ["Crypto", "Forex", "Commodities"]
     )
     
+    # Auto-select all symbols
     selected_symbols = st.sidebar.multiselect(
         "🎯 Select Symbols",
         data_manager.symbols[market_category],
-        default=data_manager.symbols[market_category][:3]
+        default=data_manager.symbols[market_category]  # Auto-select all
     )
     
-    # Strategy selection
+    # Auto-select all strategies
     selected_strategies = st.sidebar.multiselect(
         "🤖 Select Strategies",
         list(strategy_manager.strategies.keys()),
-        default=list(strategy_manager.strategies.keys())[:3]
+        default=list(strategy_manager.strategies.keys())  # Auto-select all
     )
     
-    # Timeframe selection
+    # Timeframe selection - Default to 15m as requested
     selected_timeframes = st.sidebar.multiselect(
         "⏰ Select Timeframes",
         strategy_manager.timeframes,
-        default=['15m', '1h', '4h']
+        default=['15m', '1h', '4h']  # Include 15m as requested
     )
     
     # Auto-trading configuration
@@ -1564,19 +1585,51 @@ def main():
             progress_bar.progress((i + 1) / len(selected_symbols))
         
         status_text.text("✅ Analysis complete!")
+        
+        # Store signals in session state
+        st.session_state.signals_generated = all_signals
+        
+        # Auto-execute trades if enabled
+        if enable_auto_trading and all_signals:
+            auto_execute_count = 0
+            for signal in all_signals:
+                if signal.confidence > 0.7 and not signal.executed:  # Only high confidence signals
+                    trade = paper_trading.execute_trade(signal)
+                    if trade:
+                        auto_execute_count += 1
+            if auto_execute_count > 0:
+                st.sidebar.success(f"🤖 Auto-executed {auto_execute_count} trades!")
     
     # Filter signals based on user selection
     filtered_signals = [
-        s for s in all_signals 
+        s for s in st.session_state.signals_generated 
         if s.strategy in selected_strategies and s.timeframe in selected_timeframes
     ]
     
-    # Main Tabs with colorful styling
-    tab1, tab2, tab3, tab4 = st.tabs([
+    # Update paper trading with current prices
+    if current_prices:
+        paper_trading.update_trades(current_prices)
+    
+    # Auto-refresh logic
+    if auto_refresh:
+        current_time = time.time()
+        time_since_refresh = current_time - st.session_state.last_refresh
+        time_remaining = max(0, refresh_interval - time_since_refresh)
+        
+        st.markdown(f'<div class="refresh-info">🔄 AUTO-REFRESH ACTIVE | Next update in {int(time_remaining)} seconds</div>', unsafe_allow_html=True)
+        
+        # Only refresh when the interval has passed
+        if time_since_refresh >= refresh_interval:
+            st.session_state.last_refresh = current_time
+            st.rerun()
+    
+    # Main Tabs with Trade History
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📈 LIVE DASHBOARD", 
         "⚡ TRADING SIGNALS", 
         "💼 PAPER TRADING", 
-        "📊 PERFORMANCE"
+        "📊 PERFORMANCE",
+        "📋 TRADE HISTORY"
     ])
     
     # Tab 1: Live Dashboard with Mood Gauges
@@ -1604,35 +1657,28 @@ def main():
                 high_confidence = len([s for s in filtered_signals if s.confidence > 0.8])
                 st.metric("🎯 High Confidence", high_confidence)
             
-            # Market Mood Gauges Section
-            st.markdown('<div class="dashboard-header">📊 MARKET MOOD GAUGES</div>', unsafe_allow_html=True)
+            # Market Mood Gauges Section with Real Prices
+            st.markdown('<div class="dashboard-header">📊 MARKET MOOD GAUGES (15m TIMEFRAME)</div>', unsafe_allow_html=True)
             
-            # Calculate mood scores for major assets
+            # Calculate mood scores for major assets using 15m timeframe
             mood_assets = ['BTC-USD', 'ETH-USD', 'XRP-USD', 'SOL-USD', 'GC=F', 'EURUSD=X']
             mood_scores = {}
+            mood_prices = {}
             
             for asset in mood_assets:
                 mood_scores[asset] = mood_gauge.calculate_mood_score(asset)
+                mood_prices[asset] = data_manager.get_current_price(asset)
             
             # Display mood gauges in 3 columns
             cols = st.columns(3)
             for i, asset in enumerate(mood_assets):
                 with cols[i % 3]:
-                    current_price = data_manager.get_current_price(asset)
+                    current_price = mood_prices[asset]
                     score = mood_scores[asset]
-                    label, color = mood_gauge.get_mood_label(score)
                     
                     # Create and display needle gauge
                     fig = mood_gauge.create_needle_gauge(asset, score, current_price)
                     st.plotly_chart(fig, use_container_width=True)
-                    
-                    # Display mood label
-                    st.markdown(f"""
-                    <div style="text-align: center; margin-top: -2rem; margin-bottom: 1rem;">
-                        <h4 style="color: {color}; font-weight: bold; background: rgba(0,0,0,0.7); 
-                        padding: 0.5rem; border-radius: 10px;">{label}</h4>
-                    </div>
-                    """, unsafe_allow_html=True)
             
             # Recent Signals Preview
             st.markdown('<div class="dashboard-header">⚡ RECENT TRADING SIGNALS</div>', unsafe_allow_html=True)
@@ -1684,8 +1730,9 @@ def main():
             # Display filtered signals
             st.markdown(f'<div class="dashboard-header">📋 FILTERED SIGNALS ({len(filtered_display_signals)})</div>', unsafe_allow_html=True)
             
+            # Manual trade execution
             for signal in filtered_display_signals:
-                display_signal(signal)
+                display_signal_with_execution(signal)
     
     # Tab 3: Paper Trading
     with tab3:
@@ -1705,6 +1752,36 @@ def main():
         with col4:
             overall_return = ((paper_trading.balance - paper_trading.initial_balance) / paper_trading.initial_balance) * 100
             st.metric("📈 Overall Return", f"{overall_return:.2f}%")
+        
+        # Open Trades
+        if paper_trading.open_trades:
+            st.markdown('<div class="dashboard-header">📈 OPEN TRADES</div>', unsafe_allow_html=True)
+            open_trades_data = []
+            for trade in paper_trading.open_trades:
+                current_price = current_prices.get(trade.symbol, trade.entry_price)
+                if trade.action == "BUY":
+                    unrealized_pnl = (current_price - trade.entry_price) * trade.quantity
+                    unrealized_pnl_percent = (unrealized_pnl / (trade.entry_price * trade.quantity)) * 100
+                else:
+                    unrealized_pnl = (trade.entry_price - current_price) * trade.quantity
+                    unrealized_pnl_percent = (unrealized_pnl / (trade.entry_price * trade.quantity)) * 100
+                
+                open_trades_data.append({
+                    "ID": trade.id,
+                    "Symbol": trade.symbol,
+                    "Action": trade.action,
+                    "Strategy": trade.strategy,
+                    "Entry Price": trade.entry_price,
+                    "Current Price": current_price,
+                    "Stop Loss": trade.stop_loss,
+                    "Targets": f"{trade.targets[0]:.2f} | {trade.targets[1]:.2f} | {trade.targets[2]:.2f}",
+                    "Quantity": trade.quantity,
+                    "Unrealized P&L": unrealized_pnl,
+                    "Unrealized P&L %": unrealized_pnl_percent
+                })
+            
+            open_trades_df = pd.DataFrame(open_trades_data)
+            st.dataframe(open_trades_df, use_container_width=True)
     
     # Tab 4: Performance Analytics
     with tab4:
@@ -1731,8 +1808,95 @@ def main():
             with col4:
                 st.metric("📉 Max Drawdown", f"{metrics['max_drawdown']:.2f}%")
                 st.metric("⚡ Sharpe Ratio", f"{metrics['sharpe_ratio']:.2f}")
+            
+            # Strategy-wise performance
+            st.markdown('<div class="dashboard-header">🤖 STRATEGY PERFORMANCE</div>', unsafe_allow_html=True)
+            
+            strategy_performance = {}
+            for trade in paper_trading.closed_trades:
+                if trade.strategy not in strategy_performance:
+                    strategy_performance[trade.strategy] = []
+                if trade.pnl is not None:
+                    strategy_performance[trade.strategy].append(trade.pnl)
+            
+            strategy_data = []
+            for strategy, pnls in strategy_performance.items():
+                if pnls:
+                    wins = sum(1 for pnl in pnls if pnl > 0)
+                    total = len(pnls)
+                    win_rate = (wins / total) * 100
+                    total_pnl = sum(pnls)
+                    avg_pnl = np.mean(pnls)
+                    
+                    strategy_data.append({
+                        "Strategy": strategy,
+                        "Total Trades": total,
+                        "Win Rate": f"{win_rate:.1f}%",
+                        "Total P&L": f"${total_pnl:.2f}",
+                        "Avg P&L": f"${avg_pnl:.2f}"
+                    })
+            
+            if strategy_data:
+                strategy_df = pd.DataFrame(strategy_data)
+                st.dataframe(strategy_df, use_container_width=True)
         else:
             st.info("ℹ️ No performance data available. Execute some trades first.")
+    
+    # Tab 5: Trade History (NEW)
+    with tab5:
+        st.markdown('<div class="sub-header">📋 TRADE HISTORY</div>', unsafe_allow_html=True)
+        
+        if not paper_trading.closed_trades:
+            st.info("ℹ️ No trade history available.")
+        else:
+            # Closed Trades Table
+            closed_trades_data = []
+            for trade in paper_trading.closed_trades:
+                pnl_class = "positive-pnl" if trade.pnl and trade.pnl > 0 else "negative-pnl"
+                pnl_display = f"${trade.pnl:.2f}" if trade.pnl else "N/A"
+                pnl_percent_display = f"{trade.pnl_percent:.2f}%" if trade.pnl_percent else "N/A"
+                
+                closed_trades_data.append({
+                    "ID": trade.id,
+                    "Symbol": trade.symbol,
+                    "Action": trade.action,
+                    "Strategy": trade.strategy,
+                    "Timeframe": trade.timeframe,
+                    "Entry Price": trade.entry_price,
+                    "Exit Price": trade.exit_price,
+                    "Exit Reason": trade.exit_reason,
+                    "Quantity": trade.quantity,
+                    "P&L": pnl_display,
+                    "P&L %": pnl_percent_display,
+                    "Entry Time": trade.entry_time.strftime("%Y-%m-%d %H:%M"),
+                    "Exit Time": trade.exit_time.strftime("%Y-%m-%d %H:%M") if trade.exit_time else "N/A"
+                })
+            
+            closed_trades_df = pd.DataFrame(closed_trades_data)
+            
+            # Add custom styling for P&L
+            def style_pnl(val):
+                if isinstance(val, str) and val.startswith('$'):
+                    try:
+                        pnl_value = float(val.replace('$', '').replace(',', ''))
+                        color = 'color: #10b981; font-weight: bold;' if pnl_value > 0 else 'color: #ef4444; font-weight: bold;'
+                        return color
+                    except:
+                        return ''
+                return ''
+            
+            styled_df = closed_trades_df.style.applymap(style_pnl, subset=['P&L', 'P&L %'])
+            st.dataframe(styled_df, use_container_width=True)
+            
+            # Export trade history
+            if st.button("📥 Export Trade History to CSV"):
+                csv = closed_trades_df.to_csv(index=False)
+                st.download_button(
+                    label="Download CSV",
+                    data=csv,
+                    file_name=f"trade_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
 
 def display_signal(signal: TradingSignal):
     """Display a trading signal in a formatted card"""
@@ -1768,6 +1932,56 @@ def display_signal(signal: TradingSignal):
         </div>
     </div>
     """, unsafe_allow_html=True)
+
+def display_signal_with_execution(signal: TradingSignal):
+    """Display a trading signal with execution button"""
+    signal_class = "buy-signal" if signal.action == "BUY" else "sell-signal"
+    signal_color = "#10b981" if signal.action == "BUY" else "#ef4444"
+    signal_icon = "🟢" if signal.action == "BUY" else "🔴"
+    priority_icon = "🚨" if signal.priority == "HIGH" else "⚠️" if signal.priority == "MEDIUM" else "ℹ️"
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        st.markdown(f"""
+        <div class="signal-card {signal_class}">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <h4 style="margin: 0; color: {signal_color}; font-weight: 700;">
+                        {signal_icon} {signal.symbol} {signal.action} - {signal.strategy}
+                    </h4>
+                    <p style="margin: 0; font-size: 0.9rem;">
+                        ⏱️ {signal.timeframe} | 🎯 Confidence: <strong>{signal.confidence:.2f}</strong>
+                    </p>
+                </div>
+                <div style="text-align: right;">
+                    <strong>{priority_icon} {signal.priority}</strong>
+                </div>
+            </div>
+            <div style="margin-top: 0.8rem;">
+                <p style="margin: 0; font-size: 0.9rem; font-weight: 600;">
+                    💰 Entry: <strong>{signal.entry:.4f}</strong> | 
+                    🛑 SL: <strong>{signal.stop_loss:.4f}</strong> | 
+                    🎯 TP1: <strong>{signal.target1:.4f}</strong>
+                </p>
+                <p style="margin: 0.3rem 0; font-size: 0.85rem; color: #555; font-style: italic;">
+                    💡 {signal.reasoning}
+                </p>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        if not signal.executed:
+            if st.button(f"🚀 Execute", key=f"execute_{signal.symbol}_{signal.strategy}"):
+                trade = paper_trading.execute_trade(signal)
+                if trade:
+                    st.success(f"✅ Trade executed: {trade.id}")
+                    st.rerun()
+                else:
+                    st.error("❌ Failed to execute trade")
+        else:
+            st.info(f"✅ Executed\n{signal.trade_id}")
 
 if __name__ == "__main__":
     main()
