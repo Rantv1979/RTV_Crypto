@@ -21,7 +21,7 @@ import uuid
 
 # ----- CONFIG -----
 FIXED_ALLOCATION = 1000.0  # $1000 per trade
-SIGNAL_REFRESH_SECONDS = 60  # 1 minutes for signals
+SIGNAL_REFRESH_SECONDS = 120  # 2 minutes for signals
 PRICE_REFRESH_SECONDS = 30  # 30 seconds for price refresh (as requested)
 
 # Market coverage
@@ -34,7 +34,7 @@ MARKETS = {
 TIMEFRAMES = ["15m", "1h", "4h"]
 
 # ----- UI Styling (readable fonts) -----
-st.set_page_config(page_title="Rantv_Crypto_Trading Terminal", layout="wide", page_icon="📈")
+st.set_page_config(page_title="Unified Trading Terminal", layout="wide", page_icon="📈")
 st.markdown(
     """
     <style>
@@ -63,15 +63,17 @@ st.markdown(
         padding: 15px;
         box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         margin: 10px 0;
+        text-align: center;
     }
-    .small-gauge {
-        height: 220px !important;
+    .symbol-icon {
+        font-size: 24px;
+        margin-bottom: 5px;
     }
     </style>
     """, unsafe_allow_html=True
 )
 
-st.markdown('<div class="main-title">🚀 Rantv_Crypto_Trading Terminal — Single File</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">🚀 Unified Trading Terminal — Single File</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-title">Market coverage: Crypto · Forex · Commodities — Prices auto-refresh: 30 seconds</div>', unsafe_allow_html=True)
 st.write("")
 
@@ -139,7 +141,7 @@ def generate_signal_id(symbol: str, strategy: str, timeframe: str, entry: float)
     # Use uuid5 with namespace for stable deterministic id per same entry
     return str(uuid.uuid5(uuid.NAMESPACE_URL, base))
 
-def create_mood_gauge(score: float, title: str, price_display: str = ""):
+def create_mood_gauge(score: float, title: str, price_display: str = "", symbol_icon: str = ""):
     """Create a needle gauge with plotly matching the provided design"""
     # Define colors based on score ranges
     if score <= 25:
@@ -161,11 +163,11 @@ def create_mood_gauge(score: float, title: str, price_display: str = ""):
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=score,
-        number={'suffix': "%", 'font': {'size': 20}},
-        title={'text': f"<br><span style='font-size:30px;color:gray'>{title}</span>", 'font': {'size': 16}},
+        number={'suffix': "%", 'font': {'size': 28, 'color': gauge_color, 'family': "Arial Black"}},
+        title={'text': f"<br><span style='font-size:24px;color:darkblue;font-weight:bold'>{symbol_icon} {title}</span>", 'font': {'size': 16}},
         gauge={
-            'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "Gold"},
-            'bar': {'color': gauge_color, 'thickness': 0.75},
+            'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "darkblue", 'tickfont': {'size': 10}},
+            'bar': {'color': gauge_color, 'thickness': 0.8},
             'bgcolor': "white",
             'borderwidth': 2,
             'bordercolor': "gray",
@@ -177,37 +179,48 @@ def create_mood_gauge(score: float, title: str, price_display: str = ""):
                 {'range': [75, 100], 'color': '#dcfce7'}],
             'threshold': {
                 'line': {'color': "black", 'width': 4},
-                'thickness': 0.75,
+                'thickness': 0.8,
                 'value': score}
         }
     ))
     
-    # Add mood text annotation
+    # Add mood text annotation - make it more visible
     fig.add_annotation(
-        x=0.5, y=0.3,
-        text=f"<b>{mood_text}</b>",
+        x=0.5, y=0.25,
+        text=f"<b style='font-size:16px;color:{gauge_color}'>{mood_text}</b>",
         showarrow=False,
-        font=dict(size=14, color=gauge_color),
+        font=dict(size=16, color=gauge_color, family="Arial Black"),
         xref="paper", yref="paper"
     )
     
-    # Add price display if provided
+    # Add price display if provided - make it more prominent
     if price_display:
         fig.add_annotation(
-            x=0.5, y=0.15,
-            text=f"<b>{price_display}</b>",
+            x=0.5, y=0.1,
+            text=f"<b style='font-size:22px;color:darkblue'>{price_display}</b>",
             showarrow=False,
-            font=dict(size=20, color="darkblue"),
+            font=dict(size=22, color="darkblue", family="Arial Black"),
             xref="paper", yref="paper"
         )
     
     fig.update_layout(
-        height=220, 
-        margin=dict(t=40, b=30, l=20, r=20),
+        height=280, 
+        margin=dict(t=60, b=40, l=20, r=20),
         paper_bgcolor='rgba(0,0,0,0)',
         font={'color': "darkblue", 'family': "Arial"}
     )
     return fig
+
+def get_symbol_icon(symbol: str):
+    """Get emoji icon for symbol"""
+    icons = {
+        "BTC-USD": "₿",
+        "ETH-USD": "Ξ", 
+        "SOL-USD": "◎",
+        "XRP-USD": "XRP",
+        "GC=F": "🥇"
+    }
+    return icons.get(symbol, "📊")
 
 def calculate_support_resistance(df, window=20):
     """Calculate simple support and resistance levels"""
@@ -454,7 +467,7 @@ with tab1:
         st.write("• 76-100: Extreme Greed")
     
     with mmi_col2:
-        fig = create_mood_gauge(overall_mood, "Market Mood Index", "Updated recently")
+        fig = create_mood_gauge(overall_mood, "Market Mood Index", "Live", "📊")
         st.plotly_chart(fig, use_container_width=True)
     
     st.markdown("----")
@@ -479,16 +492,21 @@ with tab1:
                     mood_score = float(np.clip(50 + returns.tail(15).mean() * 1000, 0, 100))
                 
                 # Clean symbol name for display and format price
-                display_name = sym.replace("-USD", "").replace("=X", "").replace("GC=F", "Gold")
+                display_name = sym.replace("-USD", "").replace("=X", "").replace("GC=F", "GOLD")
                 
-                # Format price - remove decimals for most symbols, keep 2 decimals for Gold
-                if sym == "GC=F":  # Gold
+                # Get symbol icon
+                symbol_icon = get_symbol_icon(sym)
+                
+                # Format price - different formatting for different symbols
+                if sym == "XRP-USD":  # XRP with 2 decimals
+                    price_display = f"${price:.2f}"
+                elif sym == "GC=F":  # Gold with no decimals
                     price_display = f"${price:.0f}"
-                else:
+                else:  # BTC, ETH, SOL with no decimals
                     price_display = f"${price:.0f}"
                 
                 st.markdown(f'<div class="mood-gauge-container">', unsafe_allow_html=True)
-                fig = create_mood_gauge(mood_score, display_name, price_display)
+                fig = create_mood_gauge(mood_score, display_name, price_display, symbol_icon)
                 st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
                 st.markdown('</div>', unsafe_allow_html=True)
     else:
@@ -642,6 +660,7 @@ st.markdown(f"<div class='small'>Last signal refresh: {datetime.fromtimestamp(st
 st.markdown(f"<div class='small'>Last price refresh: {datetime.fromtimestamp(st.session_state.last_price_refresh) if st.session_state.last_price_refresh>0 else 'Never'}</div>", unsafe_allow_html=True)
 
 # ----- Auto-refresh JavaScript -----
+# Always check if we need to refresh
 if auto_refresh_prices or auto_refresh_signals:
     # Determine which refresh to use based on current tab
     if st.session_state.current_tab == "Live Dashboard" and auto_refresh_prices:
@@ -656,6 +675,7 @@ if auto_refresh_prices or auto_refresh_signals:
     if refresh_seconds:
         time_remaining = max(0, refresh_seconds - time_since_refresh)
         
+        # Show refresh status
         st.markdown(f"""
         <div style="background: linear-gradient(135deg, #FF6B6B, #4ECDC4); color: white; padding: 10px; border-radius: 10px; text-align: center; margin: 10px 0;">
             🔄 AUTO-REFRESH ACTIVE | Next update in {int(time_remaining)} seconds
