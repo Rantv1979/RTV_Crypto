@@ -161,7 +161,7 @@ def create_mood_gauge(score: float, title: str, price_display: str = ""):
         number={'suffix': "  ", 'font': {'size': 24}},
         title={'text': f"<br><span style='font-size:40px;color:gray'>{title}</span>", 'font': {'size': 20}},
         gauge={
-            'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "darkblue"},
+            'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "Gold"},
             'bar': {'color': gauge_color, 'thickness': 0.75},
             'bgcolor': "white",
             'borderwidth': 2,
@@ -194,7 +194,7 @@ def create_mood_gauge(score: float, title: str, price_display: str = ""):
             x=0.5, y=0.15,
             text=f"<b>{price_display}</b>",
             showarrow=False,
-            font=dict(size=14, color="black"),
+            font=dict(size=25, color="black"),
             xref="paper", yref="paper"
         )
     
