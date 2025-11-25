@@ -250,7 +250,7 @@ if auto_refresh_signals and signal_refresh_needed or manual_refresh:
     st.session_state.last_signal_refresh = time.time()
     if auto_refresh_signals and signal_refresh_needed:
         # Force a quick re-run so UI updates immediately
-        st.experimental_rerun()
+        st.rerun()
 
 # ----- Tabs -----
 tab1, tab2, tab3 = st.tabs(["Live Dashboard", "Signals", "Paper Trading"])
