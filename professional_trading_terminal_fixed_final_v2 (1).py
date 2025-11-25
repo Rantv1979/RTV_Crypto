@@ -60,13 +60,13 @@ st.markdown(
     .mood-gauge-container {
         background: white;
         border-radius: 10px;
-        padding: 15px;
+        padding: 10px;
         box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        margin: 10px 0;
+        margin: 5px 0;
         text-align: center;
     }
     .symbol-icon {
-        font-size: 24px;
+        font-size: 20px;
         margin-bottom: 5px;
     }
     </style>
@@ -98,6 +98,8 @@ if "refresh_count" not in st.session_state:
     st.session_state.refresh_count = 0
 if "current_tab" not in st.session_state:
     st.session_state.current_tab = "Live Dashboard"
+if "auto_execute_enabled" not in st.session_state:
+    st.session_state.auto_execute_enabled = False
 
 # ----- Enhanced Auto-Refresh Strategy -----
 def setup_auto_refresh():
@@ -163,11 +165,11 @@ def create_mood_gauge(score: float, title: str, price_display: str = "", symbol_
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=score,
-        number={'suffix': "%", 'font': {'size': 28, 'color': gauge_color, 'family': "Arial Black"}},
-        title={'text': f"<br><span style='font-size:24px;color:darkblue;font-weight:bold'>{symbol_icon} {title}</span>", 'font': {'size': 16}},
+        number={'suffix': "%", 'font': {'size': 24, 'color': gauge_color, 'family': "Arial Black"}},
+        title={'text': f"<br><span style='font-size:20px;color:darkblue;font-weight:bold'>{symbol_icon} {title}</span>", 'font': {'size': 14}},
         gauge={
-            'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "darkblue", 'tickfont': {'size': 10}},
-            'bar': {'color': gauge_color, 'thickness': 0.8},
+            'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "darkblue", 'tickfont': {'size': 8}},
+            'bar': {'color': gauge_color, 'thickness': 0.7},
             'bgcolor': "white",
             'borderwidth': 2,
             'bordercolor': "gray",
@@ -178,13 +180,13 @@ def create_mood_gauge(score: float, title: str, price_display: str = "", symbol_
                 {'range': [55, 75], 'color': '#ecfdf5'},
                 {'range': [75, 100], 'color': '#dcfce7'}],
             'threshold': {
-                'line': {'color': "black", 'width': 4},
-                'thickness': 0.8,
+                'line': {'color': "black", 'width': 3},
+                'thickness': 0.7,
                 'value': score}
         }
     ))
     
-    # Add sentiment level annotations inside the arch
+    # Add sentiment level annotations inside the arch - optimized to avoid overlap
     sentiment_levels = [
         (12.5, "Extreme<br>Fear", '#ef4444'),
         (35, "Fear", '#f97316'),
@@ -195,37 +197,37 @@ def create_mood_gauge(score: float, title: str, price_display: str = "", symbol_
     
     for position, text, color in sentiment_levels:
         fig.add_annotation(
-            x=0.5 + 0.4 * np.cos(np.radians(180 - position * 1.8)),
-            y=0.5 + 0.4 * np.sin(np.radians(180 - position * 1.8)),
-            text=f"<b style='font-size:10px;color:{color}'>{text}</b>",
+            x=0.5 + 0.35 * np.cos(np.radians(180 - position * 1.8)),
+            y=0.5 + 0.35 * np.sin(np.radians(180 - position * 1.8)),
+            text=f"<b style='font-size:8px;color:{color}'>{text}</b>",
             showarrow=False,
-            font=dict(size=10, color=color, family="Arial"),
+            font=dict(size=8, color=color, family="Arial"),
             xref="paper", yref="paper",
             align="center"
         )
     
-    # Add mood text annotation - make it more visible
+    # Add mood text annotation
     fig.add_annotation(
-        x=0.5, y=0.25,
-        text=f"<b style='font-size:16px;color:{gauge_color}'>{mood_text}</b>",
+        x=0.5, y=0.3,
+        text=f"<b style='font-size:14px;color:{gauge_color}'>{mood_text}</b>",
         showarrow=False,
-        font=dict(size=16, color=gauge_color, family="Arial Black"),
+        font=dict(size=14, color=gauge_color, family="Arial Black"),
         xref="paper", yref="paper"
     )
     
-    # Add price display if provided - make it more prominent
+    # Add price display if provided
     if price_display:
         fig.add_annotation(
-            x=0.5, y=0.1,
-            text=f"<b style='font-size:22px;color:darkblue'>{price_display}</b>",
+            x=0.5, y=0.15,
+            text=f"<b style='font-size:18px;color:darkblue'>{price_display}</b>",
             showarrow=False,
-            font=dict(size=22, color="darkblue", family="Arial Black"),
+            font=dict(size=18, color="darkblue", family="Arial Black"),
             xref="paper", yref="paper"
         )
     
     fig.update_layout(
-        height=280, 
-        margin=dict(t=60, b=40, l=20, r=20),
+        height=240, 
+        margin=dict(t=50, b=30, l=20, r=20),
         paper_bgcolor='rgba(0,0,0,0)',
         font={'color': "darkblue", 'family': "Arial"}
     )
@@ -403,6 +405,14 @@ auto_refresh_prices = st.sidebar.checkbox("Auto-refresh prices (30 sec)", value=
 st.sidebar.write("Signals refresh every 120s, prices refresh every 30s when enabled.")
 
 st.sidebar.markdown("---")
+st.sidebar.header("Auto Trading")
+st.session_state.auto_execute_enabled = st.sidebar.checkbox("Enable Auto Trade Execution", value=False)
+if st.session_state.auto_execute_enabled:
+    st.sidebar.success("Auto Execution: ENABLED")
+else:
+    st.sidebar.warning("Auto Execution: DISABLED")
+
+st.sidebar.markdown("---")
 st.sidebar.header("Paper trading")
 st.sidebar.write("Fixed allocation per trade: $%d" % FIXED_ALLOCATION)
 st.sidebar.metric("Balance (demo)", f"${st.session_state.balance:,.2f}")
@@ -440,6 +450,20 @@ if (auto_refresh_signals and signal_refresh_needed) or manual_refresh:
     # Update session signals and refresh timestamp
     st.session_state.signals = merged
     st.session_state.last_signal_refresh = time.time()
+    
+    # Auto-execute signals if enabled
+    if st.session_state.auto_execute_enabled:
+        executed_count = 0
+        for s in sorted(st.session_state.signals, key=lambda x: x['confidence'], reverse=True):
+            if s['symbol'] not in selected_symbols:
+                continue
+            if s['confidence'] >= 0.7 and s['id'] not in st.session_state.executed_signal_ids:
+                t = execute_paper_trade(s)
+                if t:
+                    executed_count += 1
+        if executed_count > 0:
+            st.sidebar.success(f"Auto-executed {executed_count} trades")
+    
     # Force a quick re-run so UI updates immediately
     st.rerun()
 
@@ -461,75 +485,47 @@ with tab1:
     
     st.markdown("----")
     
-    # Market Mood Index (MMI) gauge
-    st.subheader("Market Mood Index (MMI)")
-    mmi_col1, mmi_col2 = st.columns([1, 2])
-    
-    with mmi_col1:
-        # Overall market mood (average of all selected symbols)
-        overall_mood = 50.0
-        mood_scores = []
-        for sym in selected_symbols:
-            df = yf.download(sym, period="7d", interval="15m", progress=False)
-            if not df.empty and len(df['Close']) > 10:
-                returns = df['Close'].pct_change().fillna(0)
-                mood_score = float(np.clip(50 + returns.tail(15).mean() * 1000, 0, 100))
-                mood_scores.append(mood_score)
-        
-        if mood_scores:
-            overall_mood = sum(mood_scores) / len(mood_scores)
-        
-        st.metric("Overall Market Mood", f"{overall_mood:.1f}%")
-        st.write("**Sentiment Levels:**")
-        st.write("• 0-25: Extreme Fear")
-        st.write("• 26-45: Fear") 
-        st.write("• 46-55: Neutral")
-        st.write("• 56-75: Greed")
-        st.write("• 76-100: Extreme Greed")
-    
-    with mmi_col2:
-        fig = create_mood_gauge(overall_mood, "Market Mood Index", "Live", "📊")
-        st.plotly_chart(fig, use_container_width=True)
-    
-    st.markdown("----")
-    
     # Individual symbol gauges - ONLY for BTC/ETH/Gold/Solana/XRP
-    st.subheader("Individual Symbol Analysis")
+    st.subheader("Market Mood Analysis")
     
     # Define the specific symbols we want to show mood gauges for
     mood_gauge_symbols = ["BTC-USD", "ETH-USD", "GC=F", "SOL-USD", "XRP-USD"]
     available_mood_symbols = [sym for sym in mood_gauge_symbols if sym in selected_symbols]
     
     if available_mood_symbols:
-        cols = st.columns(3)
-        for i, sym in enumerate(available_mood_symbols):
-            with cols[i % 3]:
-                price = st.session_state.last_prices.get(sym) or fetch_latest_close(sym)[0] or 0.0
-                # Mood score based on recent performance
-                df = yf.download(sym, period="7d", interval="15m", progress=False)
-                mood_score = 50.0
-                if not df.empty and len(df['Close']) > 10:
-                    returns = df['Close'].pct_change().fillna(0)
-                    mood_score = float(np.clip(50 + returns.tail(15).mean() * 1000, 0, 100))
-                
-                # Clean symbol name for display and format price
-                display_name = sym.replace("-USD", "").replace("=X", "").replace("GC=F", "GOLD")
-                
-                # Get symbol icon
-                symbol_icon = get_symbol_icon(sym)
-                
-                # Format price - different formatting for different symbols
-                if sym == "XRP-USD":  # XRP with 2 decimals
-                    price_display = f"${price:.2f}"
-                elif sym == "GC=F":  # Gold with no decimals
-                    price_display = f"${price:.0f}"
-                else:  # BTC, ETH, SOL with no decimals
-                    price_display = f"${price:.0f}"
-                
-                st.markdown(f'<div class="mood-gauge-container">', unsafe_allow_html=True)
-                fig = create_mood_gauge(mood_score, display_name, price_display, symbol_icon)
-                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-                st.markdown('</div>', unsafe_allow_html=True)
+        # Display in rows of 3
+        for i in range(0, len(available_mood_symbols), 3):
+            cols = st.columns(3)
+            row_symbols = available_mood_symbols[i:i+3]
+            
+            for j, sym in enumerate(row_symbols):
+                with cols[j]:
+                    price = st.session_state.last_prices.get(sym) or fetch_latest_close(sym)[0] or 0.0
+                    # Mood score based on recent performance
+                    df = yf.download(sym, period="7d", interval="15m", progress=False)
+                    mood_score = 50.0
+                    if not df.empty and len(df['Close']) > 10:
+                        returns = df['Close'].pct_change().fillna(0)
+                        mood_score = float(np.clip(50 + returns.tail(15).mean() * 1000, 0, 100))
+                    
+                    # Clean symbol name for display and format price
+                    display_name = sym.replace("-USD", "").replace("=X", "").replace("GC=F", "GOLD")
+                    
+                    # Get symbol icon
+                    symbol_icon = get_symbol_icon(sym)
+                    
+                    # Format price - different formatting for different symbols
+                    if sym == "XRP-USD":  # XRP with 2 decimals
+                        price_display = f"${price:.2f}"
+                    elif sym == "GC=F":  # Gold with no decimals
+                        price_display = f"${price:.0f}"
+                    else:  # BTC, ETH, SOL with no decimals
+                        price_display = f"${price:.0f}"
+                    
+                    st.markdown(f'<div class="mood-gauge-container">', unsafe_allow_html=True)
+                    fig = create_mood_gauge(mood_score, display_name, price_display, symbol_icon)
+                    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                    st.markdown('</div>', unsafe_allow_html=True)
     else:
         st.info("No mood gauge symbols (BTC/ETH/Gold/SOL/XRP) selected. Please select them in the sidebar.")
 
@@ -560,24 +556,7 @@ with tab2:
             
             st.markdown("----")
             
-            # Execution controls
-            auto_execute = st.checkbox("Auto-execute high confidence signals (>=0.7)", value=False)
-            
-            # Auto-execute logic
-            if auto_execute:
-                executed_count = 0
-                for s in sorted(st.session_state.signals, key=lambda x: x['confidence'], reverse=True):
-                    if s['symbol'] not in selected_symbols:
-                        continue
-                    if s['confidence'] >= 0.7 and s['id'] not in st.session_state.executed_signal_ids:
-                        t = execute_paper_trade(s)
-                        if t:
-                            executed_count += 1
-                            st.success(f"Auto-executed trade {t['id']} for {t['symbol']}")
-                
-                if executed_count > 0:
-                    st.rerun()
-            
+            # Manual execution controls
             exec_cols = st.columns([3, 1, 1])
             with exec_cols[1]:
                 if st.button("Execute top signal"):
