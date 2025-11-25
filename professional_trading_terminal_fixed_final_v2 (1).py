@@ -73,7 +73,7 @@ st.markdown(
     """, unsafe_allow_html=True
 )
 
-st.markdown('<div class="main-title">🚀 Unified Trading Terminal — Single File</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">🚀 Rantv Crypto Trading Terminal — Single File</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-title">Market coverage: Crypto · Forex · Commodities — Prices auto-refresh: 30 seconds</div>', unsafe_allow_html=True)
 st.write("")
 
