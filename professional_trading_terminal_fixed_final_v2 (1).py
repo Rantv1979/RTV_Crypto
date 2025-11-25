@@ -60,7 +60,7 @@ st.markdown(
     .mood-gauge-container {
         background: white;
         border-radius: 10px;
-        padding: 40px;
+        padding: 20px;
         box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         margin: 10px 0;
     }
@@ -159,7 +159,7 @@ def create_mood_gauge(score: float, title: str, price_display: str = ""):
         mode="gauge+number",
         value=score,
         number={'suffix': "  ", 'font': {'size': 24}},
-        title={'text': f"<br><span style='font-size:14px;color:gray'>{title}</span>", 'font': {'size': 16}},
+        title={'text': f"<br><span style='font-size:40px;color:gray'>{title}</span>", 'font': {'size': 20}},
         gauge={
             'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "darkblue"},
             'bar': {'color': gauge_color, 'thickness': 0.75},
