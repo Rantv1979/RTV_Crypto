@@ -22,7 +22,7 @@ import uuid
 # ----- CONFIG -----
 FIXED_ALLOCATION = 1000.0  # $1000 per trade
 SIGNAL_REFRESH_SECONDS = 120  # 2 minutes for signals
-PRICE_REFRESH_SECONDS = 15  # fast refresh for live prices
+PRICE_REFRESH_SECONDS = 30  # fast refresh for live prices
 
 # Market coverage
 MARKETS = {
