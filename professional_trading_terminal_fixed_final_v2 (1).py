@@ -945,11 +945,11 @@ class StrategyManager:
 # Enhanced Data Manager with Multi-Timeframe Support
 class DataManager:
     def __init__(self):
+        # Focus on major assets only
         self.symbols = {
-            'Forex': ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X', 'USDCHF=X'],
-            'Crypto': ['BTC-USD', 'ETH-USD', 'ADA-USD', 'DOT-USD', 'LINK-USD', 'XRP-USD', 'SOL-USD'],  # Added SOL
-            'Indices': ['^GSPC', '^DJI', '^IXIC', '^FTSE', '^GDAXI'],
-            'Commodities': ['GC=F', 'SI=F', 'CL=F', 'NG=F']
+            'Crypto': ['BTC-USD', 'ETH-USD', 'XRP-USD', 'SOL-USD', 'LTC-USD'],
+            'Forex': ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X'],
+            'Commodities': ['GC=F', 'SI=F', 'CL=F']
         }
         
         self.timeframes = ['5m', '15m', '30m', '1h', '4h', '1d']
@@ -999,6 +999,16 @@ class DataManager:
         for category in self.symbols:
             all_symbols.extend(self.symbols[category])
         return all_symbols
+
+    def get_current_price(self, symbol: str) -> float:
+        """Get current price for a symbol"""
+        try:
+            data = self.get_multi_timeframe_data(symbol, '15m')
+            if not data.empty:
+                return float(data['Close'].iloc[-1])
+            return 0.0
+        except:
+            return 0.0
 
 # Enhanced Paper Trading Engine
 class PaperTradingEngine:
@@ -1207,10 +1217,19 @@ class PaperTradingEngine:
         except Exception as e:
             return {}
 
-# Mood Gauge Class
+# Mood Gauge Class with Needle-style Gauges
 class MoodGauge:
     def __init__(self):
-        self.assets = ['BTC-USD', 'ETH-USD', 'SOL-USD', 'XRP-USD', 'GC=F']  # BTC, ETH, SOL, XRP, Gold
+        self.assets = ['BTC-USD', 'ETH-USD', 'XRP-USD', 'SOL-USD', 'LTC-USD', 'GC=F', 'EURUSD=X']
+        self.asset_names = {
+            'BTC-USD': 'BITCOIN',
+            'ETH-USD': 'ETHEREUM', 
+            'XRP-USD': 'XRP',
+            'SOL-USD': 'SOLANA',
+            'LTC-USD': 'LITECOIN',
+            'GC=F': 'GOLD',
+            'EURUSD=X': 'EUR/USD'
+        }
         
     def calculate_mood_score(self, symbol: str) -> float:
         """Calculate mood score for an asset (0-100)"""
@@ -1222,6 +1241,8 @@ class MoodGauge:
             
             # Calculate various indicators for mood
             current_price = float(data['Close'].iloc[-1])
+            prev_price = float(data['Close'].iloc[-2]) if len(data) > 1 else current_price
+            price_change = ((current_price - prev_price) / prev_price) * 100
             
             # RSI
             rsi = strategy_manager.calculate_rsi(data).iloc[-1]
@@ -1236,23 +1257,18 @@ class MoodGauge:
             avg_volume = float(data['Volume'].rolling(20).mean().iloc[-1])
             volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1
             
-            # Volatility (recent vs historical)
-            recent_vol = float(data['Close'].pct_change().tail(5).std() * np.sqrt(252))
-            historical_vol = float(data['Close'].pct_change().std() * np.sqrt(252))
-            vol_ratio = recent_vol / historical_vol if historical_vol > 0 else 1
-            
             # Calculate mood score components
             rsi_score = max(0, min(100, (rsi - 30) / 40 * 100))  # Normalize RSI 30-70 to 0-100
-            trend_score = max(0, min(100, 50 + price_vs_ma * 2))  # Price vs MA20
+            trend_score = max(0, min(100, 50 + price_vs_ma))  # Price vs MA20
             volume_score = min(100, volume_ratio * 25)  # Volume boost
-            vol_stability = max(0, min(100, 100 - (vol_ratio - 1) * 50))  # Lower volatility = higher score
+            momentum_score = max(0, min(100, 50 + price_change * 2))  # Price momentum
             
             # Weighted mood score
             mood_score = (
-                rsi_score * 0.3 +
-                trend_score * 0.3 +
-                volume_score * 0.2 +
-                vol_stability * 0.2
+                rsi_score * 0.25 +
+                trend_score * 0.30 +
+                volume_score * 0.20 +
+                momentum_score * 0.25
             )
             
             return max(0, min(100, mood_score))
@@ -1263,47 +1279,67 @@ class MoodGauge:
     def get_mood_label(self, score: float) -> Tuple[str, str]:
         """Get mood label and color based on score"""
         if score >= 80:
-            return "Very Bullish", "#10b981"
+            return "VERY BULLISH", "#10b981"
         elif score >= 60:
-            return "Bullish", "#34d399"
+            return "BULLISH", "#34d399"
         elif score >= 40:
-            return "Neutral", "#fbbf24"
+            return "NEUTRAL", "#fbbf24"
         elif score >= 20:
-            return "Bearish", "#f87171"
+            return "BEARISH", "#f87171"
         else:
-            return "Very Bearish", "#ef4444"
+            return "VERY BEARISH", "#ef4444"
     
-    def create_gauge_chart(self, symbol: str, score: float) -> go.Figure:
-        """Create a gauge chart for mood visualization"""
+    def create_needle_gauge(self, symbol: str, score: float, current_price: float) -> go.Figure:
+        """Create a needle-style gauge chart"""
         label, color = self.get_mood_label(score)
         
         fig = go.Figure(go.Indicator(
             mode = "gauge+number+delta",
             value = score,
             domain = {'x': [0, 1], 'y': [0, 1]},
-            title = {'text': f"{symbol} Mood", 'font': {'size': 16}},
-            delta = {'reference': 50, 'increasing': {'color': color}},
+            title = {
+                'text': f"{self.asset_names[symbol]}<br>${current_price:.2f}" if symbol not in ['EURUSD=X'] else f"{self.asset_names[symbol]}<br>{current_price:.4f}",
+                'font': {'size': 14, 'color': 'white'}
+            },
+            number = {
+                'font': {'size': 20, 'color': 'white', 'family': "Arial Black"},
+                'suffix': " pts",
+                'valueformat': ".0f"
+            },
+            delta = {
+                'reference': 50, 
+                'increasing': {'color': "#10b981"},
+                'decreasing': {'color': "#ef4444"},
+                'font': {'size': 12, 'color': 'white'}
+            },
             gauge = {
-                'axis': {'range': [None, 100], 'tickwidth': 1, 'tickcolor': "darkblue"},
-                'bar': {'color': color},
-                'bgcolor': "white",
+                'axis': {
+                    'range': [0, 100],
+                    'tickwidth': 1,
+                    'tickcolor': "white",
+                    'tickfont': {'size': 10, 'color': 'white'}
+                },
+                'bar': {'color': color, 'thickness': 0.75},
+                'bgcolor': "rgba(0,0,0,0)",
                 'borderwidth': 2,
-                'bordercolor': "gray",
+                'bordercolor': "white",
                 'steps': [
-                    {'range': [0, 20], 'color': '#fef2f2'},
-                    {'range': [20, 40], 'color': '#fecaca'},
-                    {'range': [40, 60], 'color': '#fef3c7'},
-                    {'range': [60, 80], 'color': '#d1fae5'},
-                    {'range': [80, 100], 'color': '#ecfdf5'}],
+                    {'range': [0, 20], 'color': 'rgba(239, 68, 68, 0.4)'},
+                    {'range': [20, 40], 'color': 'rgba(248, 113, 113, 0.4)'},
+                    {'range': [40, 60], 'color': 'rgba(251, 191, 36, 0.4)'},
+                    {'range': [60, 80], 'color': 'rgba(52, 211, 153, 0.4)'},
+                    {'range': [80, 100], 'color': 'rgba(16, 185, 129, 0.4)'}],
                 'threshold': {
-                    'line': {'color': "red", 'width': 4},
-                    'thickness': 0.75,
-                    'value': 90}}))
+                    'line': {'color': "white", 'width': 3},
+                    'thickness': 0.8,
+                    'value': score}}))
         
         fig.update_layout(
-            height=250,
-            margin=dict(l=20, r=20, t=50, b=20),
-            font={'color': "darkblue", 'family': "Arial"}
+            height=200,
+            margin=dict(l=10, r=10, t=60, b=10),
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            font={'color': "white", 'family': "Arial"}
         )
         
         return fig
@@ -1315,10 +1351,10 @@ paper_trading = PaperTradingEngine()
 signal_history = SignalHistoryManager()
 mood_gauge = MoodGauge()
 
-# Enhanced Streamlit UI with Auto-Refresh
+# Enhanced Streamlit UI with Fixed Auto-Refresh
 def main():
     st.set_page_config(
-        page_title="Multi-Timeframe Crypto & Forex Trading Terminal",
+        page_title="Multi-Timeframe Trading Terminal",
         page_icon="📊",
         layout="wide",
         initial_sidebar_state="expanded"
@@ -1328,205 +1364,188 @@ def main():
     st.markdown("""
     <style>
     .main-header {
-        font-size: 2.5rem;
-        color: #1f77b4;
-        text-align: center;
-        margin-bottom: 1rem;
-        background: linear-gradient(90deg, #1f77b4, #ff7f0e);
+        font-size: 2.8rem;
+        background: linear-gradient(90deg, #FF6B6B, #4ECDC4, #45B7D1, #96CEB4, #FFEAA7);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
-        font-weight: bold;
+        text-align: center;
+        margin-bottom: 1rem;
+        font-weight: 900;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
     }
     .sub-header {
-        font-size: 1.5rem;
+        font-size: 1.6rem;
         color: #2e86ab;
-        border-bottom: 2px solid #2e86ab;
+        border-bottom: 3px solid;
+        border-image: linear-gradient(90deg, #FF6B6B, #4ECDC4) 1;
         padding-bottom: 0.5rem;
         margin-top: 1.5rem;
+        font-weight: 700;
     }
-    .signal-card {
-        padding: 1rem;
-        border-radius: 15px;
-        margin: 0.5rem 0;
-        border-left: 5px solid;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        transition: transform 0.2s;
-    }
-    .signal-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 8px rgba(0, 0, 0, 0.15);
-    }
-    .buy-signal {
-        border-color: #28a745;
-        background: linear-gradient(135deg, rgba(40, 167, 69, 0.1), rgba(40, 167, 69, 0.05));
-    }
-    .sell-signal {
-        border-color: #dc3545;
-        background: linear-gradient(135deg, rgba(220, 53, 69, 0.1), rgba(220, 53, 69, 0.05));
-    }
-    .metric-card {
+    .dashboard-header {
+        font-size: 1.3rem;
+        background: linear-gradient(90deg, #667eea, #764ba2);
+        color: white;
         padding: 1rem;
         border-radius: 10px;
+        text-align: center;
+        margin: 1rem 0;
+        font-weight: bold;
+    }
+    .signal-card {
+        padding: 1.2rem;
+        border-radius: 15px;
+        margin: 0.7rem 0;
+        border-left: 6px solid;
+        box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
+        transition: all 0.3s ease;
+        background: white;
+    }
+    .signal-card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
+    }
+    .buy-signal {
+        border-color: #10b981;
+        background: linear-gradient(135deg, #ecfdf5, #d1fae5);
+    }
+    .sell-signal {
+        border-color: #ef4444;
+        background: linear-gradient(135deg, #fef2f2, #fee2e2);
+    }
+    .metric-card {
+        padding: 1.2rem;
+        border-radius: 15px;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
-        margin: 0.5rem 0;
+        margin: 0.5rem;
         text-align: center;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
     }
-    .mood-gauge-container {
-        background: white;
+    .mood-container {
+        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
         border-radius: 15px;
         padding: 1rem;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        margin: 0.5rem 0;
+        margin: 0.5rem;
+        box-shadow: 0 6px 12px rgba(0,0,0,0.15);
     }
     .time-display {
-        font-size: 1.2rem;
+        font-size: 1.1rem;
         color: #6c757d;
         text-align: center;
         margin-bottom: 1rem;
-        font-weight: bold;
+        font-weight: 600;
+        background: #f8f9fa;
+        padding: 0.7rem;
+        border-radius: 10px;
+        border-left: 4px solid #4ECDC4;
     }
     .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
+        gap: 4px;
+        background: #f0f2f6;
+        padding: 8px;
+        border-radius: 12px;
     }
     .stTabs [data-baseweb="tab"] {
-        height: 50px;
+        height: 60px;
         white-space: pre-wrap;
-        background-color: #f0f2f6;
-        border-radius: 10px 10px 0px 0px;
+        background: linear-gradient(135deg, #667eea, #764ba2);
+        border-radius: 8px;
         gap: 8px;
-        padding-top: 10px;
-        padding-bottom: 10px;
-        font-weight: bold;
+        padding: 12px 20px;
+        font-weight: 700;
+        color: white;
+        margin: 0 2px;
+        transition: all 0.3s ease;
+    }
+    .stTabs [data-baseweb="tab"]:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
     }
     .stTabs [aria-selected="true"] {
-        background-color: #2e86ab;
-        color: white;
+        background: linear-gradient(135deg, #FF6B6B, #4ECDC4) !important;
+        color: white !important;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.2);
     }
     .refresh-info {
-        font-size: 0.8rem;
-        color: #6c757d;
-        text-align: right;
-        background: #f8f9fa;
-        padding: 0.5rem;
-        border-radius: 5px;
-        margin-bottom: 1rem;
+        font-size: 0.9rem;
+        color: white;
+        text-align: center;
+        background: linear-gradient(135deg, #FF6B6B, #4ECDC4);
+        padding: 0.8rem;
+        border-radius: 10px;
+        margin: 1rem 0;
+        font-weight: 600;
     }
     </style>
     """, unsafe_allow_html=True)
     
-    st.markdown('<h1 class="main-header">Multi-Timeframe Crypto & Forex Trading Terminal</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🚀 MULTI-TIMEFRAME TRADING TERMINAL</h1>', unsafe_allow_html=True)
     
     # Display local time
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    st.markdown(f'<div class="time-display">🕐 Local Time: {current_time}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="time-display">🕐 LOCAL TIME: {current_time} | AUTO-REFRESH: ACTIVE</div>', unsafe_allow_html=True)
     
-    # Auto-refresh configuration
-    auto_refresh = st.sidebar.checkbox("Enable Auto Refresh", value=True)
-    refresh_interval = st.sidebar.slider("Refresh Interval (seconds)", 10, 120, 30)
+    # Simple Auto-refresh without JavaScript complications
+    auto_refresh = st.sidebar.checkbox("🔄 Enable Auto Refresh", value=True)
+    refresh_interval = st.sidebar.slider("⏱️ Refresh Interval (seconds)", 15, 120, 30)
     
     if auto_refresh:
-        st.markdown(f"""
-        <div class="refresh-info">
-            🔄 Auto Refresh Enabled | Next refresh in <span id="countdown">{refresh_interval}</span> seconds
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Auto-refresh JavaScript
-        st.markdown(f"""
-        <script>
-        function updateCountdown() {{
-            var countdownElement = document.getElementById('countdown');
-            if (countdownElement) {{
-                var current = parseInt(countdownElement.textContent);
-                if (current > 1) {{
-                    countdownElement.textContent = current - 1;
-                }} else {{
-                    countdownElement.textContent = {refresh_interval};
-                    // Use Streamlit's native rerun instead of experimental_rerun
-                    const event = new CustomEvent('streamlit:rerun');
-                    window.dispatchEvent(event);
-                }}
-            }}
-        }}
-        setInterval(updateCountdown, 1000);
-        </script>
-        """, unsafe_allow_html=True)
-        
-        # Add a timer to trigger rerun
-        if 'last_refresh' not in st.session_state:
-            st.session_state.last_refresh = time.time()
-        
-        if time.time() - st.session_state.last_refresh > refresh_interval:
-            st.session_state.last_refresh = time.time()
-            st.rerun()
+        # Use Streamlit's native auto-refresh capability
+        st.markdown(f'<div class="refresh-info">🔄 AUTO-REFRESH ACTIVE | Next update in {refresh_interval} seconds</div>', unsafe_allow_html=True)
+        time.sleep(refresh_interval)
+        st.rerun()
     
     # Sidebar Configuration
-    st.sidebar.header("⚙️ Configuration")
+    st.sidebar.header("⚙️ CONFIGURATION")
     
     # Market selection
     market_category = st.sidebar.selectbox(
-        "Select Market Category",
-        ["Forex", "Crypto", "Indices", "Commodities"]
+        "📊 Select Market Category",
+        ["Crypto", "Forex", "Commodities"]
     )
     
     selected_symbols = st.sidebar.multiselect(
-        "Select Symbols",
+        "🎯 Select Symbols",
         data_manager.symbols[market_category],
         default=data_manager.symbols[market_category][:3]
     )
     
     # Strategy selection
     selected_strategies = st.sidebar.multiselect(
-        "Select Strategies",
+        "🤖 Select Strategies",
         list(strategy_manager.strategies.keys()),
         default=list(strategy_manager.strategies.keys())[:3]
     )
     
     # Timeframe selection
     selected_timeframes = st.sidebar.multiselect(
-        "Select Timeframes",
+        "⏰ Select Timeframes",
         strategy_manager.timeframes,
         default=['15m', '1h', '4h']
     )
     
     # Auto-trading configuration
-    st.sidebar.header("🤖 Auto Trading")
+    st.sidebar.header("🤖 AUTO TRADING")
     enable_auto_trading = st.sidebar.checkbox("Enable Auto Trading", value=False)
-    min_confidence = st.sidebar.slider("Minimum Confidence", 0.1, 1.0, 0.7)
-    max_trades_per_day = st.sidebar.number_input("Max Trades Per Day", 1, 50, 10)
     
     # Risk Management
-    st.sidebar.header("🛡️ Risk Management")
-    risk_per_trade = st.sidebar.slider("Risk Per Trade (%)", 0.1, 5.0, 1.0)
+    st.sidebar.header("🛡️ RISK MANAGEMENT")
     paper_trading.initial_balance = st.sidebar.number_input("Initial Balance", 1000, 100000, 10000)
     
-    # Main Tabs with enhanced styling
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "📈 Live Dashboard", 
-        "⚡ Trading Signals", 
-        "💼 Paper Trading", 
-        "📊 Performance",
-        "📋 Signal History",
-        "😊 Market Mood"
-    ])
+    # Generate signals for selected symbols
+    all_signals = []
+    current_prices = {}
     
-    # Tab 1: Live Dashboard
-    with tab1:
-        st.markdown('<div class="sub-header">Live Market Dashboard</div>', unsafe_allow_html=True)
-        
-        if not selected_symbols:
-            st.warning("Please select at least one symbol.")
-            return
-        
-        # Generate signals for selected symbols
-        all_signals = []
-        
+    if selected_symbols:
         progress_bar = st.progress(0)
         status_text = st.empty()
         
         for i, symbol in enumerate(selected_symbols):
-            status_text.text(f"Analyzing {symbol}...")
+            status_text.text(f"🔍 Analyzing {symbol}...")
+            
+            # Get current price
+            current_prices[symbol] = data_manager.get_current_price(symbol)
             
             # Run multi-timeframe analysis
             signals = strategy_manager.run_multi_timeframe_analysis(symbol)
@@ -1534,66 +1553,111 @@ def main():
             
             progress_bar.progress((i + 1) / len(selected_symbols))
         
-        status_text.text("Analysis complete!")
+        status_text.text("✅ Analysis complete!")
+    
+    # Filter signals based on user selection
+    filtered_signals = [
+        s for s in all_signals 
+        if s.strategy in selected_strategies and s.timeframe in selected_timeframes
+    ]
+    
+    # Main Tabs with colorful styling
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📈 LIVE DASHBOARD", 
+        "⚡ TRADING SIGNALS", 
+        "💼 PAPER TRADING", 
+        "📊 PERFORMANCE"
+    ])
+    
+    # Tab 1: Live Dashboard with Mood Gauges
+    with tab1:
+        st.markdown('<div class="sub-header">🎯 LIVE MARKET DASHBOARD</div>', unsafe_allow_html=True)
         
-        # Filter signals based on user selection
-        filtered_signals = [
-            s for s in all_signals 
-            if s.strategy in selected_strategies and s.timeframe in selected_timeframes
-        ]
-        
-        # Display quick overview
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Total Signals", len(filtered_signals))
-        
-        with col2:
-            buy_signals = len([s for s in filtered_signals if s.action == "BUY"])
-            st.metric("Buy Signals", buy_signals)
-        
-        with col3:
-            sell_signals = len([s for s in filtered_signals if s.action == "SELL"])
-            st.metric("Sell Signals", sell_signals)
-        
-        with col4:
-            high_confidence = len([s for s in filtered_signals if s.confidence > 0.8])
-            st.metric("High Confidence", high_confidence)
-        
-        # Display signals in two columns
-        st.markdown('<div class="sub-header">Recent Trading Signals</div>', unsafe_allow_html=True)
-        
-        if filtered_signals:
-            # Sort by confidence (descending)
-            filtered_signals.sort(key=lambda x: x.confidence, reverse=True)
-            
-            # Display in columns
-            cols = st.columns(2)
-            for i, signal in enumerate(filtered_signals[:10]):  # Show top 10
-                with cols[i % 2]:
-                    display_signal(signal)
+        if not selected_symbols:
+            st.warning("⚠️ Please select at least one symbol from the sidebar.")
         else:
-            st.info("No trading signals found for the current selection.")
+            # Quick overview metrics
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("📡 Total Signals", len(filtered_signals))
+            
+            with col2:
+                buy_signals = len([s for s in filtered_signals if s.action == "BUY"])
+                st.metric("🟢 Buy Signals", buy_signals)
+            
+            with col3:
+                sell_signals = len([s for s in filtered_signals if s.action == "SELL"])
+                st.metric("🔴 Sell Signals", sell_signals)
+            
+            with col4:
+                high_confidence = len([s for s in filtered_signals if s.confidence > 0.8])
+                st.metric("🎯 High Confidence", high_confidence)
+            
+            # Market Mood Gauges Section
+            st.markdown('<div class="dashboard-header">📊 MARKET MOOD GAUGES</div>', unsafe_allow_html=True)
+            
+            # Calculate mood scores for major assets
+            mood_assets = ['BTC-USD', 'ETH-USD', 'XRP-USD', 'SOL-USD', 'GC=F', 'EURUSD=X']
+            mood_scores = {}
+            
+            for asset in mood_assets:
+                mood_scores[asset] = mood_gauge.calculate_mood_score(asset)
+            
+            # Display mood gauges in 3 columns
+            cols = st.columns(3)
+            for i, asset in enumerate(mood_assets):
+                with cols[i % 3]:
+                    current_price = data_manager.get_current_price(asset)
+                    score = mood_scores[asset]
+                    label, color = mood_gauge.get_mood_label(score)
+                    
+                    # Create and display needle gauge
+                    fig = mood_gauge.create_needle_gauge(asset, score, current_price)
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Display mood label
+                    st.markdown(f"""
+                    <div style="text-align: center; margin-top: -2rem; margin-bottom: 1rem;">
+                        <h4 style="color: {color}; font-weight: bold; background: rgba(0,0,0,0.7); 
+                        padding: 0.5rem; border-radius: 10px;">{label}</h4>
+                    </div>
+                    """, unsafe_allow_html=True)
+            
+            # Recent Signals Preview
+            st.markdown('<div class="dashboard-header">⚡ RECENT TRADING SIGNALS</div>', unsafe_allow_html=True)
+            
+            if filtered_signals:
+                # Sort by confidence and show top 6
+                filtered_signals.sort(key=lambda x: x.confidence, reverse=True)
+                
+                # Display in columns
+                signal_cols = st.columns(2)
+                for i, signal in enumerate(filtered_signals[:6]):
+                    with signal_cols[i % 2]:
+                        display_signal(signal)
+            else:
+                st.info("ℹ️ No trading signals found for the current selection.")
     
     # Tab 2: Trading Signals
     with tab2:
-        st.markdown('<div class="sub-header">Advanced Signal Analysis</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sub-header">⚡ ADVANCED SIGNAL ANALYSIS</div>', unsafe_allow_html=True)
         
         if not filtered_signals:
-            st.info("No signals to display. Run analysis in Live Dashboard tab first.")
+            st.info("ℹ️ No signals to display. Run analysis in Live Dashboard first.")
         else:
             # Signal filtering
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                min_conf_filter = st.slider("Min Confidence Filter", 0.0, 1.0, 0.6, key="conf_filter")
+                min_conf_filter = st.slider("🎯 Min Confidence", 0.0, 1.0, 0.6, key="conf_filter")
             
             with col2:
-                action_filter = st.selectbox("Action Filter", ["All", "BUY", "SELL"], key="action_filter")
+                action_filter = st.selectbox("🔀 Action Filter", ["All", "BUY", "SELL"], key="action_filter")
             
             with col3:
                 timeframe_filter = st.multiselect(
-                    "Timeframe Filter",
+                    "⏰ Timeframe Filter",
                     strategy_manager.timeframes,
                     default=selected_timeframes,
                     key="timeframe_filter"
@@ -1608,54 +1672,33 @@ def main():
             ]
             
             # Display filtered signals
-            st.markdown(f'<div class="sub-header">Filtered Signals ({len(filtered_display_signals)})</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="dashboard-header">📋 FILTERED SIGNALS ({len(filtered_display_signals)})</div>', unsafe_allow_html=True)
             
             for signal in filtered_display_signals:
                 display_signal(signal)
     
     # Tab 3: Paper Trading
     with tab3:
-        st.markdown('<div class="sub-header">Paper Trading Dashboard</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sub-header">💼 PAPER TRADING DASHBOARD</div>', unsafe_allow_html=True)
         
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.metric("Current Balance", f"${paper_trading.balance:.2f}")
+            st.metric("💰 Current Balance", f"${paper_trading.balance:.2f}")
         
         with col2:
-            st.metric("Open Trades", len(paper_trading.open_trades))
+            st.metric("📈 Open Trades", len(paper_trading.open_trades))
         
         with col3:
-            st.metric("Closed Trades", len(paper_trading.closed_trades))
+            st.metric("📊 Closed Trades", len(paper_trading.closed_trades))
         
         with col4:
             overall_return = ((paper_trading.balance - paper_trading.initial_balance) / paper_trading.initial_balance) * 100
-            st.metric("Overall Return", f"{overall_return:.2f}%")
-        
-        # Open Trades
-        st.markdown('<div class="sub-header">Open Trades</div>', unsafe_allow_html=True)
-        if paper_trading.open_trades:
-            open_trades_data = []
-            for trade in paper_trading.open_trades:
-                open_trades_data.append({
-                    "ID": trade.id,
-                    "Symbol": trade.symbol,
-                    "Action": trade.action,
-                    "Entry Price": trade.entry_price,
-                    "Stop Loss": trade.stop_loss,
-                    "Targets": str([f"{t:.4f}" for t in trade.targets]),
-                    "Quantity": trade.quantity,
-                    "Strategy": trade.strategy,
-                    "Timeframe": trade.timeframe
-                })
-            
-            st.dataframe(pd.DataFrame(open_trades_data), use_container_width=True)
-        else:
-            st.info("No open trades")
+            st.metric("📈 Overall Return", f"{overall_return:.2f}%")
     
     # Tab 4: Performance Analytics
     with tab4:
-        st.markdown('<div class="sub-header">Performance Analytics</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sub-header">📊 PERFORMANCE ANALYTICS</div>', unsafe_allow_html=True)
         
         # Get performance metrics
         metrics = paper_trading.get_performance_metrics()
@@ -1664,114 +1707,53 @@ def main():
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                st.metric("Win Rate", f"{metrics['win_rate']:.1f}%")
-                st.metric("Total Trades", metrics['total_trades'])
+                st.metric("🎯 Win Rate", f"{metrics['win_rate']:.1f}%")
+                st.metric("📈 Total Trades", metrics['total_trades'])
             
             with col2:
-                st.metric("Total P&L", f"${metrics['total_pnl']:.2f}")
-                st.metric("Profit Factor", f"{metrics['profit_factor']:.2f}")
+                st.metric("💰 Total P&L", f"${metrics['total_pnl']:.2f}")
+                st.metric("📊 Profit Factor", f"{metrics['profit_factor']:.2f}")
             
             with col3:
-                st.metric("Avg Profit", f"${metrics['avg_profit']:.2f}")
-                st.metric("Avg Loss", f"${metrics['avg_loss']:.2f}")
+                st.metric("🟢 Avg Profit", f"${metrics['avg_profit']:.2f}")
+                st.metric("🔴 Avg Loss", f"${metrics['avg_loss']:.2f}")
             
             with col4:
-                st.metric("Max Drawdown", f"{metrics['max_drawdown']:.2f}%")
-                st.metric("Sharpe Ratio", f"{metrics['sharpe_ratio']:.2f}")
+                st.metric("📉 Max Drawdown", f"{metrics['max_drawdown']:.2f}%")
+                st.metric("⚡ Sharpe Ratio", f"{metrics['sharpe_ratio']:.2f}")
         else:
-            st.info("No performance data available. Execute some trades first.")
-    
-    # Tab 5: Signal History
-    with tab5:
-        st.markdown('<div class="sub-header">Signal History & Strategy Accuracy</div>', unsafe_allow_html=True)
-        
-        # Strategy accuracy overview
-        accuracy_data = signal_history.get_all_strategies_accuracy(days_back=30)
-        
-        if accuracy_data:
-            accuracy_list = []
-            for strategy, data in accuracy_data.items():
-                if data['total'] > 0:
-                    accuracy_list.append({
-                        'Strategy': strategy,
-                        'Total Signals': data['total'],
-                        'Winning Signals': data['wins'],
-                        'Accuracy (%)': f"{data['accuracy']:.1f}%"
-                    })
-            
-            if accuracy_list:
-                st.dataframe(pd.DataFrame(accuracy_list), use_container_width=True)
-            else:
-                st.info("No signal history data available yet.")
-        else:
-            st.info("No signal history data available yet.")
-    
-    # Tab 6: Market Mood Gauge
-    with tab6:
-        st.markdown('<div class="sub-header">Market Mood Gauge</div>', unsafe_allow_html=True)
-        st.markdown("Real-time sentiment analysis for major assets")
-        
-        # Calculate mood scores for all assets
-        mood_scores = {}
-        for asset in mood_gauge.assets:
-            mood_scores[asset] = mood_gauge.calculate_mood_score(asset)
-        
-        # Display mood gauges in columns
-        cols = st.columns(3)
-        asset_names = {
-            'BTC-USD': 'Bitcoin',
-            'ETH-USD': 'Ethereum', 
-            'SOL-USD': 'Solana',
-            'XRP-USD': 'XRP',
-            'GC=F': 'Gold'
-        }
-        
-        for i, (asset, score) in enumerate(mood_scores.items()):
-            with cols[i % 3]:
-                label, color = mood_gauge.get_mood_label(score)
-                st.markdown(f"""
-                <div class="mood-gauge-container">
-                    <h4 style="text-align: center; margin-bottom: 1rem;">{asset_names.get(asset, asset)}</h4>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # Create and display gauge chart
-                fig = mood_gauge.create_gauge_chart(asset_names.get(asset, asset), score)
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Display mood label
-                st.markdown(f"""
-                <div style="text-align: center; margin-top: -2rem;">
-                    <h3 style="color: {color}; font-weight: bold;">{label}</h3>
-                    <p style="color: #6c757d; font-size: 0.9rem;">Score: {score:.1f}/100</p>
-                </div>
-                """, unsafe_allow_html=True)
+            st.info("ℹ️ No performance data available. Execute some trades first.")
 
 def display_signal(signal: TradingSignal):
     """Display a trading signal in a formatted card"""
     signal_class = "buy-signal" if signal.action == "BUY" else "sell-signal"
-    signal_color = "#28a745" if signal.action == "BUY" else "#dc3545"
+    signal_color = "#10b981" if signal.action == "BUY" else "#ef4444"
     signal_icon = "🟢" if signal.action == "BUY" else "🔴"
+    priority_icon = "🚨" if signal.priority == "HIGH" else "⚠️" if signal.priority == "MEDIUM" else "ℹ️"
     
     st.markdown(f"""
     <div class="signal-card {signal_class}">
         <div style="display: flex; justify-content: space-between; align-items: center;">
             <div>
-                <h4 style="margin: 0; color: {signal_color};">{signal_icon} {signal.symbol} {signal.action} - {signal.strategy}</h4>
-                <p style="margin: 0; font-size: 0.9rem;">⏱️ {signal.timeframe} | 🎯 Confidence: {signal.confidence:.2f}</p>
+                <h4 style="margin: 0; color: {signal_color}; font-weight: 700;">
+                    {signal_icon} {signal.symbol} {signal.action} - {signal.strategy}
+                </h4>
+                <p style="margin: 0; font-size: 0.9rem;">
+                    ⏱️ {signal.timeframe} | 🎯 Confidence: <strong>{signal.confidence:.2f}</strong>
+                </p>
             </div>
             <div style="text-align: right;">
-                <strong>🚦 {signal.priority}</strong>
+                <strong>{priority_icon} {signal.priority}</strong>
             </div>
         </div>
-        <div style="margin-top: 0.5rem;">
-            <p style="margin: 0; font-size: 0.9rem;">
-                <strong>💰 Entry:</strong> {signal.entry:.4f} | 
-                <strong>🛑 SL:</strong> {signal.stop_loss:.4f} | 
-                <strong>🎯 TP1:</strong> {signal.target1:.4f}
+        <div style="margin-top: 0.8rem;">
+            <p style="margin: 0; font-size: 0.9rem; font-weight: 600;">
+                💰 Entry: <strong>{signal.entry:.4f}</strong> | 
+                🛑 SL: <strong>{signal.stop_loss:.4f}</strong> | 
+                🎯 TP1: <strong>{signal.target1:.4f}</strong>
             </p>
-            <p style="margin: 0; font-size: 0.8rem; color: #666;">
-                <strong>💡 Reasoning:</strong> {signal.reasoning}
+            <p style="margin: 0.3rem 0; font-size: 0.85rem; color: #555; font-style: italic;">
+                💡 {signal.reasoning}
             </p>
         </div>
     </div>
