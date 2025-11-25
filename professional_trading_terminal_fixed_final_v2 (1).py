@@ -34,7 +34,7 @@ MARKETS = {
 TIMEFRAMES = ["15m", "1h", "4h"]
 
 # ----- UI Styling (readable fonts) -----
-st.set_page_config(page_title="Unified Trading Terminal", layout="wide", page_icon="📈")
+st.set_page_config(page_title="Rantv_Crypto_Trading Terminal", layout="wide", page_icon="📈")
 st.markdown(
     """
     <style>
@@ -60,15 +60,18 @@ st.markdown(
     .mood-gauge-container {
         background: white;
         border-radius: 10px;
-        padding: 20px;
+        padding: 15px;
         box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         margin: 10px 0;
+    }
+    .small-gauge {
+        height: 220px !important;
     }
     </style>
     """, unsafe_allow_html=True
 )
 
-st.markdown('<div class="main-title">🚀 Unified Trading Terminal — Single File</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">🚀 Rantv_Crypto_Trading Terminal — Single File</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-title">Market coverage: Crypto · Forex · Commodities — Prices auto-refresh: 30 seconds</div>', unsafe_allow_html=True)
 st.write("")
 
@@ -158,8 +161,8 @@ def create_mood_gauge(score: float, title: str, price_display: str = ""):
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=score,
-        number={'suffix': "  ", 'font': {'size': 24}},
-        title={'text': f"<br><span style='font-size:40px;color:gray'>{title}</span>", 'font': {'size': 20}},
+        number={'suffix': "%", 'font': {'size': 20}},
+        title={'text': f"<br><span style='font-size:30px;color:gray'>{title}</span>", 'font': {'size': 16}},
         gauge={
             'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "Gold"},
             'bar': {'color': gauge_color, 'thickness': 0.75},
@@ -184,7 +187,7 @@ def create_mood_gauge(score: float, title: str, price_display: str = ""):
         x=0.5, y=0.3,
         text=f"<b>{mood_text}</b>",
         showarrow=False,
-        font=dict(size=16, color=gauge_color),
+        font=dict(size=14, color=gauge_color),
         xref="paper", yref="paper"
     )
     
@@ -194,13 +197,13 @@ def create_mood_gauge(score: float, title: str, price_display: str = ""):
             x=0.5, y=0.15,
             text=f"<b>{price_display}</b>",
             showarrow=False,
-            font=dict(size=25, color="darkblue"),
+            font=dict(size=20, color="darkblue"),
             xref="paper", yref="paper"
         )
     
     fig.update_layout(
-        height=280, 
-        margin=dict(t=60, b=40, l=20, r=20),
+        height=220, 
+        margin=dict(t=40, b=30, l=20, r=20),
         paper_bgcolor='rgba(0,0,0,0)',
         font={'color': "darkblue", 'family': "Arial"}
     )
@@ -442,7 +445,7 @@ with tab1:
         if mood_scores:
             overall_mood = sum(mood_scores) / len(mood_scores)
         
-        st.metric("Overall Market Mood", f"{overall_mood:.1f}")
+        st.metric("Overall Market Mood", f"{overall_mood:.1f}%")
         st.write("**Sentiment Levels:**")
         st.write("• 0-25: Extreme Fear")
         st.write("• 26-45: Fear") 
@@ -456,26 +459,40 @@ with tab1:
     
     st.markdown("----")
     
-    # Individual symbol gauges
+    # Individual symbol gauges - ONLY for BTC/ETH/Gold/Solana/XRP
     st.subheader("Individual Symbol Analysis")
-    pick = selected_symbols[:6]  # Show up to 6 symbols
-    cols = st.columns(3)
-    for i, sym in enumerate(pick):
-        with cols[i % 3]:
-            price = st.session_state.last_prices.get(sym) or fetch_latest_close(sym)[0] or 0.0
-            # Mood score based on recent performance
-            df = yf.download(sym, period="7d", interval="15m", progress=False)
-            mood_score = 50.0
-            if not df.empty and len(df['Close']) > 10:
-                returns = df['Close'].pct_change().fillna(0)
-                mood_score = float(np.clip(50 + returns.tail(15).mean() * 1000, 0, 100))
-            
-            # Clean symbol name for display
-            display_name = sym.replace("-USD", "").replace("=X", "")
-            st.markdown(f'<div class="mood-gauge-container">', unsafe_allow_html=True)
-            fig = create_mood_gauge(mood_score, display_name, f"${price:.4f}" if price > 1 else f"${price:.6f}")
-            st.plotly_chart(fig, use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Define the specific symbols we want to show mood gauges for
+    mood_gauge_symbols = ["BTC-USD", "ETH-USD", "GC=F", "SOL-USD", "XRP-USD"]
+    available_mood_symbols = [sym for sym in mood_gauge_symbols if sym in selected_symbols]
+    
+    if available_mood_symbols:
+        cols = st.columns(3)
+        for i, sym in enumerate(available_mood_symbols):
+            with cols[i % 3]:
+                price = st.session_state.last_prices.get(sym) or fetch_latest_close(sym)[0] or 0.0
+                # Mood score based on recent performance
+                df = yf.download(sym, period="7d", interval="15m", progress=False)
+                mood_score = 50.0
+                if not df.empty and len(df['Close']) > 10:
+                    returns = df['Close'].pct_change().fillna(0)
+                    mood_score = float(np.clip(50 + returns.tail(15).mean() * 1000, 0, 100))
+                
+                # Clean symbol name for display and format price
+                display_name = sym.replace("-USD", "").replace("=X", "").replace("GC=F", "Gold")
+                
+                # Format price - remove decimals for most symbols, keep 2 decimals for Gold
+                if sym == "GC=F":  # Gold
+                    price_display = f"${price:.0f}"
+                else:
+                    price_display = f"${price:.0f}"
+                
+                st.markdown(f'<div class="mood-gauge-container">', unsafe_allow_html=True)
+                fig = create_mood_gauge(mood_score, display_name, price_display)
+                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        st.info("No mood gauge symbols (BTC/ETH/Gold/SOL/XRP) selected. Please select them in the sidebar.")
 
 # ----- TAB 2: Signals -----
 with tab2:
