@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timedelta
 import yfinance as yf
 import plotly.graph_objects as go
-from streamlit_autorefresh import st_autorefresh
+import uuid
 
 # ----- CONFIG -----
 FIXED_ALLOCATION = 1000.0  # $1000 per trade
@@ -75,7 +75,6 @@ st.markdown(
 
 st.markdown('<div class="main-title">🚀 Rantv Crypto Trading Terminal — Single File</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-title">Market coverage: Crypto · Forex · Commodities — Prices auto-refresh: 30 seconds</div>', unsafe_allow_html=True)
-st_autorefresh(interval=PRICE_REFRESH_MS, key="price_refresh_improved")
 st.write("")
 
 # ----- Session state initialization -----
@@ -115,12 +114,12 @@ def setup_auto_refresh():
     # Manual refresh controls
     col1, col2 = st.columns([1, 1])
     with col1:
-        if st.button("🔄 Manual Refresh", use_container_width=True):
+        if st.button("🔄 Manual Refresh", width='stretch'):
             st.session_state.last_signal_refresh = 0  # Force refresh
             st.session_state.last_price_refresh = 0   # Force refresh
             st.rerun()
     with col2:
-        if st.button("📊 Update Prices", use_container_width=True):
+        if st.button("📊 Update Prices", width='stretch'):
             st.session_state.last_price_refresh = 0  # Force price refresh
             st.rerun()
     
@@ -135,7 +134,7 @@ def setup_auto_refresh():
 def fetch_latest_close(symbol: str, period: str = "7d", interval: str = "15m"):
     """Fetch latest close price using yfinance (cached in session during run)"""
     try:
-        df = yf.download(symbol, period=period, interval=interval, progress=False)
+        df = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=True)
         if df is None or df.empty:
             return None, pd.DataFrame()
         price = float(df['Close'].iloc[-1])
@@ -311,14 +310,19 @@ def sma_crossover_strategy(symbol: str, df15m: pd.DataFrame):
     close = df15m['Close']
     sma5 = close.rolling(5).mean()
     sma20 = close.rolling(20).mean()
-    if float(sma5.iloc[-1]) > float(sma20.iloc[-1]) and float(sma5.iloc[-2]) <= float(sma20.iloc[-2]):
+    sma5_last = float(sma5.iloc[-1])
+    sma20_last = float(sma20.iloc[-1])
+    sma5_prev = float(sma5.iloc[-2])
+    sma20_prev = float(sma20.iloc[-2])
+    
+    if sma5_last > sma20_last and sma5_prev <= sma20_prev:
         entry = float(close.iloc[-1])
         signal_id = generate_signal_id(symbol, "sma_5_20", "15m", entry)
         signals.append(dict(
             id=signal_id, symbol=symbol, action="BUY", strategy="sma_5_20", timeframe="15m",
             entry=entry, stop_loss=entry - entry*0.01, target1=entry*1.01, confidence=0.65, timestamp=time.time()
         ))
-    if float(sma5.iloc[-1]) < float(sma20.iloc[-1]) and float(sma5.iloc[-2]) >= float(sma20.iloc[-2]):
+    if sma5_last < sma20_last and sma5_prev >= sma20_prev:
         entry = float(close.iloc[-1])
         signal_id = generate_signal_id(symbol, "sma_5_20", "15m", entry)
         signals.append(dict(
@@ -508,7 +512,7 @@ with tab1:
                 with cols[j]:
                     price = st.session_state.last_prices.get(sym) or fetch_latest_close(sym)[0] or 0.0
                     # Mood score based on recent performance
-                    df = yf.download(sym, period="7d", interval="15m", progress=False)
+                    df = yf.download(sym, period="7d", interval="15m", progress=False, auto_adjust=True)
                     mood_score = 50.0
                     if not df.empty and len(df['Close']) > 10:
                         returns = df['Close'].pct_change().fillna(0)
@@ -557,7 +561,7 @@ with tab2:
                     'target1': 'Take Profit',
                     'stop_loss': 'Stop Loss'
                 }), 
-                use_container_width=True
+                width='stretch'
             )
             
             st.markdown("----")
@@ -565,7 +569,7 @@ with tab2:
             # Manual execution controls
             exec_cols = st.columns([3, 1, 1])
             with exec_cols[1]:
-                if st.button("Execute top signal"):
+                if st.button("Execute top signal", width='stretch'):
                     # pick highest confidence available that isn't executed
                     available = [s for s in st.session_state.signals if s['symbol'] in selected_symbols and s['id'] not in st.session_state.executed_signal_ids]
                     if available:
@@ -604,7 +608,7 @@ with tab3:
         display_columns = ['id', 'symbol', 'action', 'entry', 'current_price', 'qty', 'pnl', 'pnl_percent', 
                           'stop_loss', 'target1', 'support', 'resistance', 'strategy', 'entry_time']
         
-        st.dataframe(df_trades[display_columns], use_container_width=True)
+        st.dataframe(df_trades[display_columns], width='stretch')
         
         # Close trade functionality
         st.subheader("Close Trades")
@@ -618,7 +622,7 @@ with tab3:
                 st.session_state.paper_trades[0]['entry']
             ), step=0.0001, format="%.6f")
             
-            if st.button("Close Trade"):
+            if st.button("Close Trade", width='stretch'):
                 closed_trade = close_trade(trade_options[selected_trade], close_price)
                 if closed_trade:
                     st.success(f"Closed trade {closed_trade['id']}. PnL: ${closed_trade['pnl']:.2f} ({closed_trade['pnl_percent']:.2f}%)")
@@ -652,10 +656,10 @@ with tab4:
         # Display history table
         history_columns = ['id', 'symbol', 'action', 'entry', 'exit_price', 'qty', 'pnl', 'pnl_percent', 
                           'strategy', 'entry_time', 'exit_time']
-        st.dataframe(df_history[history_columns], use_container_width=True)
+        st.dataframe(df_history[history_columns], width='stretch')
         
         # Option to clear history
-        if st.button("Clear Trade History"):
+        if st.button("Clear Trade History", width='stretch'):
             st.session_state.trade_history = []
             st.rerun()
     else:
