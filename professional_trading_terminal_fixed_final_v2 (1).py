@@ -22,7 +22,7 @@ from streamlit_autorefresh import st_autorefresh
 
 # ----- CONFIG -----
 FIXED_ALLOCATION = 1000.0  # $1000 per trade
-SIGNAL_REFRESH_SECONDS = 120  # 2 minutes for signals
+SIGNAL_REFRESH_SECONDS = 60  # 1 minutes for signals
 PRICE_REFRESH_SECONDS = 30  # 30 seconds for price refresh (as requested)
 
 # Market coverage
@@ -430,7 +430,7 @@ if price_refresh_needed and auto_refresh_prices:
     # Force rerun for price updates
     st.rerun()
 
-# Signals refresh path (every 2 minutes or when manually requested)
+# Signals refresh path (every 1 minutes or when manually requested)
 manual_refresh = st.sidebar.button("Refresh Signals Now")
 if (auto_refresh_signals and signal_refresh_needed) or manual_refresh:
     # Generate new signals for current selection
