@@ -2,7 +2,7 @@
 # Single-file Streamlit trading terminal
 # Features:
 # - Market coverage: Cryptos, Forex, Commodities (user requested symbols)
-# - Signals auto-refresh every 120 seconds (2 minutes)
+# - Signals auto-refresh every 60 seconds (1 minutes)
 # - Price sections refresh faster (every 30 seconds)
 # - Fixed allocation $1000 per trade
 # - Prevent duplicate trade executions using unique signal IDs stored in session_state
