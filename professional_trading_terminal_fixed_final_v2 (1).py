@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 import yfinance as yf
 import plotly.graph_objects as go
 import uuid
+from streamlit_autorefresh import st_autorefresh
 
 # ----- CONFIG -----
 FIXED_ALLOCATION = 1000.0  # $1000 per trade
