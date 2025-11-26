@@ -18,7 +18,6 @@ from datetime import datetime, timedelta
 import yfinance as yf
 import plotly.graph_objects as go
 import uuid
-from streamlit_autorefresh import st_autorefresh
 
 # ----- CONFIG -----
 FIXED_ALLOCATION = 1000.0  # $1000 per trade
@@ -101,6 +100,8 @@ if "current_tab" not in st.session_state:
     st.session_state.current_tab = "Live Dashboard"
 if "auto_execute_enabled" not in st.session_state:
     st.session_state.auto_execute_enabled = False
+if "last_auto_execute" not in st.session_state:
+    st.session_state.last_auto_execute = 0.0
 
 # ----- Enhanced Auto-Refresh Strategy -----
 def setup_auto_refresh():
@@ -114,9 +115,12 @@ def setup_auto_refresh():
     col1, col2 = st.columns([1, 1])
     with col1:
         if st.button("🔄 Manual Refresh", use_container_width=True):
+            st.session_state.last_signal_refresh = 0  # Force refresh
+            st.session_state.last_price_refresh = 0   # Force refresh
             st.rerun()
     with col2:
         if st.button("📊 Update Prices", use_container_width=True):
+            st.session_state.last_price_refresh = 0  # Force price refresh
             st.rerun()
     
     # Auto-refresh logic
@@ -401,9 +405,9 @@ market_choice = st.sidebar.selectbox("Market", list(MARKETS.keys()), index=0)
 selected_symbols = st.sidebar.multiselect("Symbols", MARKETS[market_choice], default=MARKETS[market_choice])
 st.sidebar.markdown("---")
 st.sidebar.header("Auto-refresh")
-auto_refresh_signals = st.sidebar.checkbox("Auto-refresh signals (2 min)", value=True)
+auto_refresh_signals = st.sidebar.checkbox("Auto-refresh signals (1 min)", value=True)
 auto_refresh_prices = st.sidebar.checkbox("Auto-refresh prices (30 sec)", value=True)
-st.sidebar.write("Signals refresh every 120s, prices refresh every 30s when enabled.")
+st.sidebar.write("Signals refresh every 60s, prices refresh every 30s when enabled.")
 
 st.sidebar.markdown("---")
 st.sidebar.header("Auto Trading")
@@ -533,7 +537,7 @@ with tab1:
 # ----- TAB 2: Signals -----
 with tab2:
     st.session_state.current_tab = "Signals"
-    st.subheader("Trading Signals (auto-updates every 2 minutes)")
+    st.subheader("Trading Signals (auto-updates every 1 minutes)")
     
     if not st.session_state.signals:
         st.info("No signals generated yet. Click 'Refresh Signals Now' or enable auto-refresh.")
@@ -661,35 +665,49 @@ st.markdown("---")
 st.markdown(f"<div class='small'>Last signal refresh: {datetime.fromtimestamp(st.session_state.last_signal_refresh) if st.session_state.last_signal_refresh>0 else 'Never'}</div>", unsafe_allow_html=True)
 st.markdown(f"<div class='small'>Last price refresh: {datetime.fromtimestamp(st.session_state.last_price_refresh) if st.session_state.last_price_refresh>0 else 'Never'}</div>", unsafe_allow_html=True)
 
-# ----- Auto-refresh JavaScript -----
-# Always check if we need to refresh
+# ----- Auto-refresh using Streamlit's native approach -----
+# Use a simpler approach that works with Streamlit's architecture
 if auto_refresh_prices or auto_refresh_signals:
-    # Determine which refresh to use based on current tab
-    if st.session_state.current_tab == "Live Dashboard" and auto_refresh_prices:
-        refresh_seconds = PRICE_REFRESH_SECONDS
-        time_since_refresh = time.time() - st.session_state.last_price_refresh
-    elif st.session_state.current_tab in ["Signals", "Live Dashboard"] and auto_refresh_signals:
-        refresh_seconds = SIGNAL_REFRESH_SECONDS
-        time_since_refresh = time.time() - st.session_state.last_signal_refresh
-    else:
-        refresh_seconds = None
+    now = time.time()
     
-    if refresh_seconds:
-        time_remaining = max(0, refresh_seconds - time_since_refresh)
-        
-        # Show refresh status
+    # Determine which refresh interval to use based on current needs
+    if auto_refresh_prices and (now - st.session_state.last_price_refresh) >= PRICE_REFRESH_SECONDS:
+        # Price refresh needed
         st.markdown(f"""
-        <div style="background: linear-gradient(135deg, #FF6B6B, #4ECDC4); color: white; padding: 10px; border-radius: 10px; text-align: center; margin: 10px 0;">
-            🔄 AUTO-REFRESH ACTIVE | Next update in {int(time_remaining)} seconds
+        <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; padding: 10px; border-radius: 10px; text-align: center; margin: 10px 0;">
+            🔄 PRICE REFRESH ACTIVE | Next update in {PRICE_REFRESH_SECONDS} seconds
         </div>
         """, unsafe_allow_html=True)
         
-        # Auto-refresh using JavaScript when time is up
-        if time_remaining <= 1:
-            st.markdown("""
-            <script>
-            setTimeout(function() {
-                window.location.reload();
-            }, 1000);
-            </script>
-            """, unsafe_allow_html=True)
+    elif auto_refresh_signals and (now - st.session_state.last_signal_refresh) >= SIGNAL_REFRESH_SECONDS:
+        # Signal refresh needed
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #FF6B6B, #4ECDC4); color: white; padding: 10px; border-radius: 10px; text-align: center; margin: 10px 0;">
+            🔄 SIGNAL REFRESH ACTIVE | Next update in {SIGNAL_REFRESH_SECONDS} seconds
+        </div>
+        """, unsafe_allow_html=True)
+    
+    else:
+        # Calculate time until next refresh
+        next_price_refresh = max(0, PRICE_REFRESH_SECONDS - (now - st.session_state.last_price_refresh))
+        next_signal_refresh = max(0, SIGNAL_REFRESH_SECONDS - (now - st.session_state.last_signal_refresh))
+        next_refresh = min(next_price_refresh, next_signal_refresh)
+        
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #10b981, #059669); color: white; padding: 10px; border-radius: 10px; text-align: center; margin: 10px 0;">
+            ⏱️ AUTO-REFRESH ACTIVE | Next update in {int(next_refresh)} seconds
+        </div>
+        """, unsafe_allow_html=True)
+
+# Add a simple JavaScript-based refresh as fallback (less intrusive)
+if auto_refresh_prices or auto_refresh_signals:
+    refresh_interval = PRICE_REFRESH_SECONDS * 1000  # Convert to milliseconds
+    
+    st.markdown(f"""
+    <script>
+    // Simple auto-refresh that doesn't interfere with Streamlit
+    setTimeout(function() {{
+        window.location.reload();
+    }}, {refresh_interval});
+    </script>
+    """, unsafe_allow_html=True)
