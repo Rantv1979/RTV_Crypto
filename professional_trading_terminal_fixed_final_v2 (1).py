@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timedelta
 import yfinance as yf
 import plotly.graph_objects as go
-import uuid
+from streamlit_autorefresh import st_autorefresh
 
 # ----- CONFIG -----
 FIXED_ALLOCATION = 1000.0  # $1000 per trade
@@ -75,6 +75,7 @@ st.markdown(
 
 st.markdown('<div class="main-title">🚀 Rantv Crypto Trading Terminal — Single File</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-title">Market coverage: Crypto · Forex · Commodities — Prices auto-refresh: 30 seconds</div>', unsafe_allow_html=True)
+st_autorefresh(interval=PRICE_REFRESH_MS, key="price_refresh_improved")
 st.write("")
 
 # ----- Session state initialization -----
