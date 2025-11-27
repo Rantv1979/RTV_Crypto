@@ -831,4 +831,8 @@ class MultiStrategyCryptoTrader:
             # EMA_VWAP_Confluence
             if (ema8 > ema21 > ema50 and live > vwap and adx_val > 20 and htf_trend == 1):
                 action = "BUY"; confidence = 0.82; score = 9; strategy = "EMA_VWAP_Confluence"
-                target, stop_loss = self.calculate_intraday
+               target, stop_loss = self.calculate_intraday_target_sl(
+    live, action, atr, live, support, resistance
+)
+
+
