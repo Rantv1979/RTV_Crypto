@@ -173,6 +173,7 @@ if "v4_initialized" not in st.session_state:
     st.session_state.last_signals = {}
     st.session_state.signal_alerts = {}
     st.session_state.update_count = 0
+    st.session_state.last_update_time = datetime.now()
     ensure_trade_log()
 
 # -----------------------
@@ -184,6 +185,9 @@ with st.sidebar:
     st.session_state.auto_refresh = st.session_state.auto_refresh_v4
     st.number_input("Refresh interval (seconds)", min_value=10, max_value=300, value=25, key="refresh_v4")
     st.session_state.refresh_interval = st.session_state.refresh_v4
+    
+    st.checkbox("Auto Trade Execution", value=True, key="auto_trade")
+    
     st.markdown("---")
     st.subheader("Backtester")
     backtest_market = st.selectbox("Market to backtest", options=list(MARKETS.keys()), index=0)
@@ -315,6 +319,7 @@ def run_live_update():
             })
             play_sound_and_toast(f"{m} trade {'WON' if result_type.startswith('T') else 'LOSS'} ({result_type})")
     st.session_state.update_count += 1
+    st.session_state.last_update_time = datetime.now()
     return prices, signals
 
 # -----------------------
@@ -534,17 +539,211 @@ def render_live_dashboard(prices, signals):
         else:
             st.info("No open trades.")
 
+def render_signals_tab(prices, signals):
+    st.header("📡 Live Signals")
+    st.write("Real-time trading signals based on RSI and SMA indicators")
+    
+    # Create signals table
+    signals_data = []
+    for name in MARKETS.keys():
+        sig = signals.get(name)
+        price = prices.get(name)
+        if sig:
+            signals_data.append({
+                "Market": name,
+                "Current Price": format_price(name, price),
+                "Signal": sig["signal"],
+                "RSI": f"{sig['rsi']:.1f}",
+                "SMA5": f"{sig['sma5']:.4f}",
+                "SMA15": f"{sig['sma15']:.4f}",
+                "Signal Strength": "Strong" if (sig["signal"] == "BUY" and sig["rsi"] < 25) or (sig["signal"] == "SELL" and sig["rsi"] > 75) else "Medium"
+            })
+    
+    if signals_data:
+        signals_df = pd.DataFrame(signals_data)
+        st.dataframe(signals_df, use_container_width=True)
+        
+        # Show signal statistics
+        buy_signals = len([s for s in signals_data if s["Signal"] == "BUY"])
+        sell_signals = len([s for s in signals_data if s["Signal"] == "SELL"])
+        hold_signals = len([s for s in signals_data if s["Signal"] == "HOLD"])
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("BUY Signals", buy_signals)
+        with col2:
+            st.metric("SELL Signals", sell_signals)
+        with col3:
+            st.metric("HOLD Signals", hold_signals)
+    else:
+        st.info("No signal data available. Enable auto-refresh to get live signals.")
+
+def render_paper_trading_tab():
+    st.header("📝 Paper Trading")
+    st.write("Manual trade execution for testing strategies")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Open New Trade")
+        with st.form("paper_trade_form"):
+            market = st.selectbox("Market", options=list(MARKETS.keys()))
+            signal_type = st.selectbox("Signal Type", options=["BUY", "SELL"])
+            entry_price = st.number_input("Entry Price", min_value=0.0, step=0.0001, format="%.6f")
+            quantity = st.number_input("Quantity", min_value=0.0, step=0.01, value=1.0)
+            sl_price = st.number_input("Stop Loss", min_value=0.0, step=0.0001, format="%.6f")
+            tp1_price = st.number_input("Take Profit 1", min_value=0.0, step=0.0001, format="%.6f")
+            tp2_price = st.number_input("Take Profit 2", min_value=0.0, step=0.0001, format="%.6f")
+            tp3_price = st.number_input("Take Profit 3", min_value=0.0, step=0.0001, format="%.6f")
+            notes = st.text_input("Notes")
+            
+            if st.form_submit_button("Execute Paper Trade"):
+                tid = int(time.time()*1000)
+                row = {
+                    "id": tid,
+                    "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                    "market": market,
+                    "signal": signal_type,
+                    "entry": round(entry_price, 6),
+                    "t1": round(tp1_price, 6),
+                    "t2": round(tp2_price, 6),
+                    "t3": round(tp3_price, 6),
+                    "sl": round(sl_price, 6),
+                    "status": "OPEN",
+                    "result_time": "",
+                    "result_type": "",
+                    "result_price": "",
+                    "notes": f"PAPER-{notes}"
+                }
+                append_trade_row(row)
+                st.success(f"Paper trade executed! Trade ID: {tid}")
+    
+    with col2:
+        st.subheader("Active Paper Trades")
+        df_log = load_trade_log()
+        paper_trades = df_log[df_log["notes"].str.startswith("PAPER-", na=False)]
+        open_paper = paper_trades[paper_trades["status"] == "OPEN"]
+        
+        if not open_paper.empty:
+            st.dataframe(open_paper[["timestamp", "market", "signal", "entry", "t1", "t2", "t3", "sl", "notes"]], 
+                        use_container_width=True)
+            
+            # Close trade manually
+            trade_to_close = st.selectbox("Select trade to close", 
+                                        options=open_paper["id"].tolist(),
+                                        format_func=lambda x: f"ID: {x} - {open_paper[open_paper['id']==x]['market'].iloc[0]} {open_paper[open_paper['id']==x]['signal'].iloc[0]}")
+            close_price = st.number_input("Close Price", min_value=0.0, step=0.0001, format="%.6f")
+            close_reason = st.selectbox("Close Reason", options=["MANUAL", "T1", "T2", "T3", "SL"])
+            
+            if st.button("Close Trade"):
+                update_trade_row(trade_to_close, {
+                    "status": "CLOSED",
+                    "result_time": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                    "result_type": close_reason,
+                    "result_price": round(close_price, 6),
+                    "notes": f"{open_paper[open_paper['id']==trade_to_close]['notes'].iloc[0]} - MANUAL_CLOSE"
+                })
+                st.success("Trade closed successfully!")
+                st.rerun()
+        else:
+            st.info("No active paper trades")
+
+def render_history_tab():
+    st.header("📊 Trading History")
+    st.write("Complete trade history and performance analytics")
+    
+    df_log = load_trade_log()
+    
+    if df_log.empty:
+        st.info("No trade history available")
+        return
+    
+    # Filters
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        market_filter = st.multiselect("Filter by Market", options=df_log["market"].unique(), default=df_log["market"].unique())
+    with col2:
+        signal_filter = st.multiselect("Filter by Signal", options=df_log["signal"].unique(), default=df_log["signal"].unique())
+    with col3:
+        status_filter = st.multiselect("Filter by Status", options=df_log["status"].unique(), default=df_log["status"].unique())
+    
+    # Apply filters
+    filtered_df = df_log[
+        (df_log["market"].isin(market_filter)) &
+        (df_log["signal"].isin(signal_filter)) &
+        (df_log["status"].isin(status_filter))
+    ]
+    
+    # Display filtered data
+    st.dataframe(filtered_df.sort_values("timestamp", ascending=False), use_container_width=True)
+    
+    # Performance metrics
+    st.subheader("Performance Analytics")
+    
+    if len(filtered_df) > 0:
+        closed_trades = filtered_df[filtered_df["status"] == "CLOSED"]
+        
+        if len(closed_trades) > 0:
+            # Calculate returns
+            closed_trades["entry"] = pd.to_numeric(closed_trades["entry"], errors="coerce")
+            closed_trades["result_price"] = pd.to_numeric(closed_trades["result_price"], errors="coerce")
+            closed_trades["pct_return"] = np.where(closed_trades["signal"] == "BUY",
+                                                (closed_trades["result_price"] - closed_trades["entry"]) / closed_trades["entry"] * 100,
+                                                (closed_trades["entry"] - closed_trades["result_price"]) / closed_trades["entry"] * 100)
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                total_trades = len(closed_trades)
+                st.metric("Total Trades", total_trades)
+            with col2:
+                winning_trades = len(closed_trades[closed_trades["result_type"].str.startswith("T")])
+                win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+                st.metric("Win Rate", f"{win_rate:.1f}%")
+            with col3:
+                avg_return = closed_trades["pct_return"].mean()
+                st.metric("Avg Return", f"{avg_return:.2f}%")
+            with col4:
+                total_return = closed_trades["pct_return"].sum()
+                st.metric("Total Return", f"{total_return:.2f}%")
+            
+            # Charts
+            col1, col2 = st.columns(2)
+            with col1:
+                st.subheader("Returns Distribution")
+                st.bar_chart(closed_trades["pct_return"])
+            with col2:
+                st.subheader("Outcomes by Market")
+                outcome_by_market = closed_trades.groupby(["market", "result_type"]).size().unstack(fill_value=0)
+                st.bar_chart(outcome_by_market)
+        else:
+            st.info("No closed trades in the selected filter")
+    else:
+        st.info("No trades match the selected filters")
+
 # -----------------------
-# Wire up main loop
+# Main App with Tabs
 # -----------------------
+
+# Run live update
 if st.session_state.auto_refresh:
-    # Run a single live update each page load (auto-rerun below)
     prices, signals = run_live_update()
 else:
     prices, signals = {}, {}
 
-# Render live UI
-render_live_dashboard(prices, signals)
+# Create tabs
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "📡 Signals", "📝 Paper Trading", "📊 History"])
+
+with tab1:
+    render_live_dashboard(prices, signals)
+
+with tab2:
+    render_signals_tab(prices, signals)
+
+with tab3:
+    render_paper_trading_tab()
+
+with tab4:
+    render_history_tab()
 
 # Clear session alert flags after render (they can be set again when new signal occurs)
 st.session_state.signal_alerts = {}
@@ -579,8 +778,10 @@ if run_backtest_btn:
             st.write(bt["outcome"].value_counts())
 
 # -----------------------
-# Auto refresh: rerun after sleep to get live updates
+# Auto refresh: use Streamlit's native auto-refresh
 # -----------------------
 if st.session_state.auto_refresh:
-    time.sleep(st.session_state.refresh_interval)
-    st.experimental_rerun()
+    # Use Streamlit's native refresh capability
+    refresh_interval = st.session_state.refresh_interval
+    time.sleep(refresh_interval)
+    st.rerun()
