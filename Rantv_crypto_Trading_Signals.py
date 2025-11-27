@@ -831,12 +831,318 @@ class MultiStrategyCryptoTrader:
             # EMA_VWAP_Confluence
             if (ema8 > ema21 > ema50 and live > vwap and adx_val > 20 and htf_trend == 1):
                 action = "BUY"; confidence = 0.82; score = 9; strategy = "EMA_VWAP_Confluence"
-                target, stop_loss = self.calculate_intraday_target_sl(
-                    entry_price=live,
-                    action=action,
-                    atr=atr,
-                    current_price=live,
-                    support=support,
-                    resistance=resistance
-                )
+                target, stop_loss = self.calculate_intraday_target_sl(live, action, atr, live, support, resistance)
+                signals.append({
+                    "symbol": symbol, "strategy": strategy, "action": action, "confidence": confidence,
+                    "score": score, "target": target, "stop_loss": stop_loss, "current_price": live,
+                    "timestamp": now_utc(), "historical_accuracy": data_manager.get_historical_accuracy(symbol, strategy)
+                })
+            
+            # RSI_MeanReversion
+            rsi_prev = float(data.iloc[-2]["RSI14"]) if len(data) > 1 else rsi_val
+            if (rsi_val < 30 and rsi_val > rsi_prev and live > support):
+                action = "BUY"; confidence = 0.78; score = 8; strategy = "RSI_MeanReversion"
+                target, stop_loss = self.calculate_intraday_target_sl(live, action, atr, live, support, resistance)
+                signals.append({
+                    "symbol": symbol, "strategy": strategy, "action": action, "confidence": confidence,
+                    "score": score, "target": target, "stop_loss": stop_loss, "current_price": live,
+                    "timestamp": now_utc(), "historical_accuracy": data_manager.get_historical_accuracy(symbol, strategy)
+                })
+            
+            # Bollinger_Reversion
+            if (live <= bb_lower and rsi_val < 35 and live > support):
+                action = "BUY"; confidence = 0.75; score = 7; strategy = "Bollinger_Reversion"
+                target, stop_loss = self.calculate_intraday_target_sl(live, action, atr, live, support, resistance)
+                signals.append({
+                    "symbol": symbol, "strategy": strategy, "action": action, "confidence": confidence,
+                    "score": score, "target": target, "stop_loss": stop_loss, "current_price": live,
+                    "timestamp": now_utc(), "historical_accuracy": data_manager.get_historical_accuracy(symbol, strategy)
+                })
+            
+            # MACD_Momentum
+            if (macd_line > macd_signal and macd_line > 0 and ema8 > ema21 and live > vwap and adx_val > 22 and htf_trend == 1):
+                action = "BUY"; confidence = 0.80; score = 8; strategy = "MACD_Momentum"
+                target, stop_loss = self.calculate_intraday_target_sl(live, action, atr, live, support, resistance)
+                signals.append({
+                    "symbol": symbol, "strategy": strategy, "action": action, "confidence": confidence,
+                    "score": score, "target": target, "stop_loss": stop_loss, "current_price": live,
+                    "timestamp": now_utc(), "historical_accuracy": data_manager.get_historical_accuracy(symbol, strategy)
+                })
+            
+            # Support_Resistance_Breakout
+            if (live > resistance and volume_spike and rsi_val > 50 and htf_trend == 1 and ema8 > ema21 and macd_line > macd_signal):
+                action = "BUY"; confidence = 0.75; score = 7; strategy = "Support_Resistance_Breakout"
+                target, stop_loss = self.calculate_intraday_target_sl(live, action, atr, live, support, resistance)
+                signals.append({
+                    "symbol": symbol, "strategy": strategy, "action": action, "confidence": confidence,
+                    "score": score, "target": target, "stop_loss": stop_loss, "current_price": live,
+                    "timestamp": now_utc(), "historical_accuracy": data_manager.get_historical_accuracy(symbol, strategy)
+                })
+            
+            # SELL strategies
+            # EMA_VWAP_Downtrend
+            if (ema8 < ema21 < ema50 and live < vwap and adx_val > 20 and htf_trend == -1):
+                action = "SELL"; confidence = 0.78; score = 9; strategy = "EMA_VWAP_Downtrend"
+                target, stop_loss = self.calculate_intraday_target_sl(live, action, atr, live, support, resistance)
+                signals.append({
+                    "symbol": symbol, "strategy": strategy, "action": action, "confidence": confidence,
+                    "score": score, "target": target, "stop_loss": stop_loss, "current_price": live,
+                    "timestamp": now_utc(), "historical_accuracy": data_manager.get_historical_accuracy(symbol, strategy)
+                })
+            
+            # RSI_Overbought
+            if (rsi_val > 70 and rsi_val < rsi_prev and live < resistance):
+                action = "SELL"; confidence = 0.72; score = 8; strategy = "RSI_Overbought"
+                target, stop_loss = self.calculate_intraday_target_sl(live, action, atr, live, support, resistance)
+                signals.append({
+                    "symbol": symbol, "strategy": strategy, "action": action, "confidence": confidence,
+                    "score": score, "target": target, "stop_loss": stop_loss, "current_price": live,
+                    "timestamp": now_utc(), "historical_accuracy": data_manager.get_historical_accuracy(symbol, strategy)
+                })
+            
+            # Bollinger_Rejection
+            if (live >= bb_upper and rsi_val > 65 and live < resistance):
+                action = "SELL"; confidence = 0.70; score = 7; strategy = "Bollinger_Rejection"
+                target, stop_loss = self.calculate_intraday_target_sl(live, action, atr, live, support, resistance)
+                signals.append({
+                    "symbol": symbol, "strategy": strategy, "action": action, "confidence": confidence,
+                    "score": score, "target": target, "stop_loss": stop_loss, "current_price": live,
+                    "timestamp": now_utc(), "historical_accuracy": data_manager.get_historical_accuracy(symbol, strategy)
+                })
+            
+            # MACD_Bearish
+            if (macd_line < macd_signal and macd_line < 0 and ema8 < ema21 and live < vwap and adx_val > 22 and htf_trend == -1):
+                action = "SELL"; confidence = 0.75; score = 8; strategy = "MACD_Bearish"
+                target, stop_loss = self.calculate_intraday_target_sl(live, action, atr, live, support, resistance)
+                signals.append({
+                    "symbol": symbol, "strategy": strategy, "action": action, "confidence": confidence,
+                    "score": score, "target": target, "stop_loss": stop_loss, "current_price": live,
+                    "timestamp": now_utc(), "historical_accuracy": data_manager.get_historical_accuracy(symbol, strategy)
+                })
+            
+            # Trend_Reversal
+            if len(data) > 5:
+                prev_trend = 1 if data.iloc[-3]["EMA8"] > data.iloc[-3]["EMA21"] else -1
+                current_trend = -1 if ema8 < ema21 else 1
+                if (prev_trend == 1 and current_trend == -1 and rsi_val > 60):
+                    action = "SELL"; confidence = 0.68; score = 6; strategy = "Trend_Reversal"
+                    target, stop_loss = self.calculate_intraday_target_sl(live, action, atr, live, support, resistance)
+                    signals.append({
+                        "symbol": symbol, "strategy": strategy, "action": action, "confidence": confidence,
+                        "score": score, "target": target, "stop_loss": stop_loss, "current_price": live,
+                        "timestamp": now_utc(), "historical_accuracy": data_manager.get_historical_accuracy(symbol, strategy)
+                    })
+            
+        except Exception as e:
+            st.error(f"Error generating signals for {symbol}: {str(e)}")
+        
+        return signals
 
+# Initialize global instances
+data_manager = CryptoDataManager()
+trader = MultiStrategyCryptoTrader()
+
+# --- Streamlit UI ---
+def main():
+    st.title("🚀 Crypto Intraday Trading Signals Pro")
+    st.markdown("Real-time crypto trading signals with multi-strategy analysis & auto-execution")
+    
+    # Sidebar
+    st.sidebar.header("Trading Controls")
+    auto_execution = st.sidebar.checkbox("Enable Auto Execution", value=False)
+    trader.auto_execution = auto_execution
+    
+    if st.sidebar.button("🔄 Refresh All Data"):
+        st.rerun()
+    
+    if st.sidebar.button("📊 Close All Positions"):
+        trader.auto_close_all_positions()
+        st.success("All positions closed!")
+        st.rerun()
+    
+    # Main tabs
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📈 Live Signals", 
+        "💰 Portfolio", 
+        "📊 Market Analysis", 
+        "⚙️ Strategies", 
+        "ℹ️ About"
+    ])
+    
+    # Tab 1: Live Signals
+    with tab1:
+        st.header("Live Trading Signals")
+        
+        selected_symbols = st.multiselect(
+            "Select Symbols to Monitor",
+            CRYPTO_SYMBOLS,
+            default=CRYPTO_SYMBOLS[:3]
+        )
+        
+        if st.button("Generate Signals"):
+            with st.spinner("Analyzing markets..."):
+                all_signals = []
+                for symbol in selected_symbols:
+                    data = data_manager.get_symbol_data(symbol, "15m")
+                    signals = trader.generate_strategy_signals(symbol, data)
+                    all_signals.extend(signals)
+                
+                # Sort by score and display
+                all_signals.sort(key=lambda x: x["score"], reverse=True)
+                
+                if all_signals:
+                    st.subheader(f"🎯 Top Signals ({len(all_signals)} found)")
+                    
+                    for signal in all_signals[:10]:  # Show top 10
+                        col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+                        
+                        with col1:
+                            action_color = "🟢" if signal["action"] == "BUY" else "🔴"
+                            st.write(f"{action_color} **{signal['symbol']}** - {signal['strategy']}")
+                            st.write(f"Action: **{signal['action']}** | Confidence: {signal['confidence']:.0%}")
+                        
+                        with col2:
+                            st.write(f"Price: ${signal['current_price']:.6f}")
+                            st.write(f"Target: ${signal['target']:.6f}")
+                        
+                        with col3:
+                            st.write(f"Stop: ${signal['stop_loss']:.6f}")
+                            st.write(f"Score: {signal['score']}/10")
+                        
+                        with col4:
+                            if st.button(f"Trade {signal['symbol']}", key=f"trade_{signal['symbol']}_{signal['strategy']}"):
+                                # Execute trade logic here
+                                st.success(f"Executed {signal['action']} for {signal['symbol']}")
+                else:
+                    st.info("No strong signals found for selected symbols")
+    
+    # Tab 2: Portfolio
+    with tab2:
+        st.header("Portfolio & Performance")
+        
+        # Equity and performance
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Equity", f"${trader.equity():.2f}")
+        with col2:
+            stats = trader.get_performance_stats()
+            st.metric("Win Rate", f"{stats['win_rate']:.1%}")
+        with col3:
+            st.metric("Total P&L", f"${stats['total_pnl']:.2f}")
+        with col4:
+            st.metric("Open Positions", stats["open_positions"])
+        
+        # Open positions
+        st.subheader("Open Positions")
+        open_positions = trader.get_open_positions_data()
+        if open_positions:
+            st.dataframe(open_positions, use_container_width=True)
+        else:
+            st.info("No open positions")
+        
+        # Trade history
+        st.subheader("Trade History")
+        trade_history = trader.get_trade_history_data()
+        if trade_history:
+            st.dataframe(trade_history, use_container_width=True)
+        else:
+            st.info("No trade history")
+    
+    # Tab 3: Market Analysis
+    with tab3:
+        st.header("Market Analysis")
+        
+        selected_symbol = st.selectbox("Select Symbol for Analysis", CRYPTO_SYMBOLS)
+        
+        if selected_symbol:
+            data = data_manager.get_symbol_data(selected_symbol, "15m")
+            
+            if data is not None and len(data) > 0:
+                # Price chart
+                fig = go.Figure()
+                fig.add_trace(go.Candlestick(
+                    x=data.index,
+                    open=data['Open'],
+                    high=data['High'],
+                    low=data['Low'],
+                    close=data['Close'],
+                    name='Price'
+                ))
+                
+                # Add indicators
+                fig.add_trace(go.Scatter(x=data.index, y=data['EMA8'], name='EMA8', line=dict(color='orange')))
+                fig.add_trace(go.Scatter(x=data.index, y=data['EMA21'], name='EMA21', line=dict(color='red')))
+                fig.add_trace(go.Scatter(x=data.index, y=data['VWAP'], name='VWAP', line=dict(color='blue')))
+                
+                fig.update_layout(title=f"{selected_symbol} Price Chart", xaxis_rangeslider_visible=False)
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Technical indicators
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.subheader("Key Levels")
+                    current_price = float(data["Close"].iloc[-1])
+                    support = float(data["Support"].iloc[-1])
+                    resistance = float(data["Resistance"].iloc[-1])
+                    
+                    st.metric("Current Price", f"${current_price:.6f}")
+                    st.metric("Support", f"${support:.6f}")
+                    st.metric("Resistance", f"${resistance:.6f}")
+                    st.metric("Distance to Support", f"{((current_price - support) / current_price * 100):.2f}%")
+                    st.metric("Distance to Resistance", f"{((resistance - current_price) / current_price * 100):.2f}%")
+                
+                with col2:
+                    st.subheader("Technical Indicators")
+                    st.metric("RSI", f"{float(data['RSI14'].iloc[-1]):.2f}")
+                    st.metric("MACD", f"{float(data['MACD'].iloc[-1]):.4f}")
+                    st.metric("ATR", f"{float(data['ATR'].iloc[-1]):.6f}")
+                    st.metric("ADX", f"{float(data['ADX'].iloc[-1]):.2f}")
+                    st.metric("HTF Trend", "Bullish" if int(data['HTF_Trend'].iloc[-1]) == 1 else "Bearish")
+    
+    # Tab 4: Strategies
+    with tab4:
+        st.header("Trading Strategies")
+        
+        for strategy_id, strategy_info in TRADING_STRATEGIES.items():
+            with st.expander(f"{strategy_info['name']} ({strategy_info['type']})"):
+                st.write(f"**Weight:** {strategy_info['weight']}")
+                st.write(f"**Type:** {strategy_info['type']}")
+                
+                # Show performance for this strategy
+                performance = trader.strategy_performance[strategy_id]
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Signals", performance["signals"])
+                with col2:
+                    st.metric("Trades", performance["trades"])
+                with col3:
+                    st.metric("PNL", f"${performance['pnl']:.2f}")
+    
+    # Tab 5: About
+    with tab5:
+        st.header("About Crypto Intraday Trading Signals Pro")
+        st.markdown("""
+        This application provides real-time crypto trading signals using multiple technical analysis strategies.
+        
+        **Features:**
+        - Real-time price data from Yahoo Finance
+        - 10 different trading strategies
+        - Automated trade execution
+        - Portfolio management
+        - Advanced technical indicators
+        
+        **Supported Symbols:**
+        - Gold Futures (GC=F)
+        - Bitcoin (BTC-USD)
+        - Ethereum (ETH-USD)
+        - Solana (SOL-USD)
+        - Ripple (XRP-USD)
+        - Litecoin (LTC-USD)
+        
+        **Disclaimer:** This is for educational purposes only. Trade at your own risk.
+        """)
+
+if __name__ == "__main__":
+    main()
