@@ -1,461 +1,656 @@
-# trading_terminal_web_gold_crypto_forex_v3.py
-"""
-Market Terminal v3
-- Markets: Gold (GC=F), BTC-USD, ETH-USD, XRP-USD, SOL-USD, EURUSD=X, GBPUSD=X, USDJPY=X
-- Strategy: RSI(14) + SMA5/SMA15 confirmation
-- Signals: BUY when RSI<30 and SMA5>SMA15; SELL when RSI>70 and SMA5<SMA15
-- Targets: T1=+1% T2=+2% T3=+3% (BUY) / reverse for SELL
-- SL: 1% adverse move
-- Option A: Automatic trade result tracking (logs to CSV)
-"""
+# final_trading_terminal_single_file.py
+# Single-file Streamlit trading terminal
+# Features:
+# - Market coverage: Cryptos, Forex, Commodities (user requested symbols)
+# - Signals auto-refresh every 120 seconds (2 minutes)
+# - Price sections refresh faster (every 30 seconds)
+# - Fixed allocation $1000 per trade
+# - Prevent duplicate trade executions using unique signal IDs stored in session_state
+# - Readable UI fonts, multi-colour tabs, mood gauge (needle-style via plotly)
+# - Trade History tab, improved paper trading with PnL and support/resistance
+# NOTE: This is a self-contained demo that uses yfinance for prices and simple strategies.
+
 import streamlit as st
 import pandas as pd
 import numpy as np
-import yfinance as yf
 import time
-import os
-from datetime import datetime
+from datetime import datetime, timedelta
+import yfinance as yf
+import plotly.graph_objects as go
+import uuid
 
-# -----------------------
-# CONFIG
-# -----------------------
-TRADE_LOG_FILE = "trade_log.csv"
-STYLES = """
-<style>
-/* Dark card styling */
-.card {
-  background: linear-gradient(180deg, #121212 0%, #1b1b1b 100%);
-  border-radius: 12px;
-  padding: 14px;
-  margin-bottom: 12px;
-  border: 1px solid rgba(255,255,255,0.04);
+# ----- CONFIG -----
+FIXED_ALLOCATION = 1000.0  # $1000 per trade
+SIGNAL_REFRESH_SECONDS = 60  # 1 minutes for signals
+PRICE_REFRESH_SECONDS = 30  # 30 seconds for price refresh (as requested)
+
+# Market coverage
+MARKETS = {
+    "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "LTC-USD"],
+    "Forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X", "USDCHF=X", "NZDUSD=X"],
+    "Commodities": ["GC=F", "SI=F", "CL=F", "NG=F"]  # Gold, Silver, Crude Oil, Natural Gas
 }
-.header {
-  display:flex; align-items:center; justify-content:space-between;
-}
-.pulse {
-  animation: pulse 1.6s infinite;
-  box-shadow: 0 0 12px rgba(255,200,60,0.25);
-}
-@keyframes pulse {
-  0% { box-shadow: 0 0 0 0 rgba(255,200,60,0.35); }
-  70% { box-shadow: 0 0 0 12px rgba(255,200,60,0); }
-  100% { box-shadow: 0 0 0 0 rgba(255,200,60,0); }
-}
-.small-muted { color: #9aa0a6; font-size:12px; }
-.metric { font-weight:700; font-size:18px; }
-</style>
-"""
-AUDIO_ALERT_URL = "https://actions.google.com/sounds/v1/alarms/beep_short.ogg"
 
-# -----------------------
-# Helper functions
-# -----------------------
-def ensure_trade_log():
-    if not os.path.exists(TRADE_LOG_FILE):
-        df = pd.DataFrame(columns=[
-            "id", "timestamp", "market", "signal", "entry", "t1", "t2", "t3", "sl",
-            "status", "result_time", "result_type", "result_price", "notes"
-        ])
-        df.to_csv(TRADE_LOG_FILE, index=False)
+TIMEFRAMES = ["15m", "1h", "4h"]
 
-def load_trade_log():
-    ensure_trade_log()
-    return pd.read_csv(TRADE_LOG_FILE)
+# ----- UI Styling (readable fonts) -----
+st.set_page_config(page_title="Unified Trading Terminal", layout="wide", page_icon="📈")
+st.markdown(
+    """
+    <style>
+    /* Readable system fonts for clarity */
+    html, body, [class*="css"]  { font-family: Inter, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
+    .stButton>button { font-weight: 700; }
+    .main-title { font-size: 24px; font-weight: 800; }
+    .sub-title { font-size: 16px; color: #666; }
+    .small { font-size: 13px; color: #777; }
+    /* Tabs color */
+    .stTabs [data-baseweb="tab-list"] { gap: 6px; padding: 6px; border-radius: 10px; }
+    .stTabs [data-baseweb="tab"] { background: linear-gradient(90deg,#667eea,#764ba2); border-radius: 8px; color: white; padding: 8px 12px; font-weight:700; }
+    .stTabs [aria-selected="true"] { background: linear-gradient(90deg,#FF6B6B,#4ECDC4) !important; color: white !important; }
+    /* Auto-refresh counter */
+    .refresh-counter {
+        background: #1e3a8a;
+        color: white;
+        padding: 4px 8px;
+        border-radius: 12px;
+        font-size: 12px;
+        margin-left: 8px;
+    }
+    .mood-gauge-container {
+        background: white;
+        border-radius: 10px;
+        padding: 20px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        margin: 10px 0;
+    }
+    </style>
+    """, unsafe_allow_html=True
+)
 
-def append_trade_row(row: dict):
-    df = load_trade_log()
-    df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
-    df.to_csv(TRADE_LOG_FILE, index=False)
+st.markdown('<div class="main-title">🚀 Unified Trading Terminal — Single File</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-title">Market coverage: Crypto · Forex · Commodities — Prices auto-refresh: 30 seconds</div>', unsafe_allow_html=True)
+st.write("")
 
-def update_trade_row(trade_id: int, updates: dict):
-    df = load_trade_log()
-    idx = df.index[df["id"] == trade_id]
-    if not idx.empty:
-        for k, v in updates.items():
-            df.loc[idx, k] = v
-        df.to_csv(TRADE_LOG_FILE, index=False)
+# ----- Session state initialization -----
+if "last_signal_refresh" not in st.session_state:
+    st.session_state.last_signal_refresh = 0.0
+if "last_price_refresh" not in st.session_state:
+    st.session_state.last_price_refresh = 0.0
+if "signals" not in st.session_state:
+    st.session_state.signals = []  # list of dict signals
+if "executed_signal_ids" not in st.session_state:
+    st.session_state.executed_signal_ids = set()  # track executed signals to avoid duplicates
+if "paper_trades" not in st.session_state:
+    st.session_state.paper_trades = []  # store paper trades
+if "trade_history" not in st.session_state:
+    st.session_state.trade_history = []  # store closed trades
+if "balance" not in st.session_state:
+    st.session_state.balance = 20000.0  # demo starting balance
+if "last_prices" not in st.session_state:
+    st.session_state.last_prices = {}
+if "refresh_count" not in st.session_state:
+    st.session_state.refresh_count = 0
+if "current_tab" not in st.session_state:
+    st.session_state.current_tab = "Live Dashboard"
 
-def play_sound_and_toast(message: str):
-    # HTML5 audio autoplay + toast
-    st.markdown(f"""
-        <audio autoplay>
-            <source src="{AUDIO_ALERT_URL}" type="audio/ogg">
-            Your browser does not support the audio element.
-        </audio>
-    """, unsafe_allow_html=True)
-    st.toast(message, icon="🔔")
+# ----- Enhanced Auto-Refresh Strategy -----
+def setup_auto_refresh():
+    """Enhanced auto-refresh strategy with manual override"""
+    st.session_state.refresh_count += 1
+    
+    # Display refresh counter
+    st.markdown(f"<div style='text-align: left; color: #6b7280; font-size: 14px;'>Refresh Count: <span class='refresh-counter'>{st.session_state.refresh_count}</span></div>", unsafe_allow_html=True)
+    
+    # Manual refresh controls
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button("🔄 Manual Refresh", use_container_width=True):
+            st.rerun()
+    with col2:
+        if st.button("📊 Update Prices", use_container_width=True):
+            st.rerun()
+    
+    # Auto-refresh logic
+    now = time.time()
+    signal_refresh_needed = (now - st.session_state.last_signal_refresh) >= SIGNAL_REFRESH_SECONDS
+    price_refresh_needed = (now - st.session_state.last_price_refresh) >= PRICE_REFRESH_SECONDS
+    
+    return signal_refresh_needed, price_refresh_needed, now
 
-def format_price_for_display(name, price):
-    if price is None or price == 0:
-        return "N/A"
-    usd_like = ["BITCOIN","ETHEREUM","GOLD (FUT)","XRP","SOLANA"]
-    if name in usd_like:
-        if price < 10:
-            return f"${price:,.6f}"
-        return f"${price:,.2f}"
-    return f"{price:,.4f}"
+# ----- Helpers -----
+def fetch_latest_close(symbol: str, period: str = "7d", interval: str = "15m"):
+    """Fetch latest close price using yfinance (cached in session during run)"""
+    try:
+        df = yf.download(symbol, period=period, interval=interval, progress=False)
+        if df is None or df.empty:
+            return None, pd.DataFrame()
+        price = float(df['Close'].iloc[-1])
+        return price, df
+    except Exception as e:
+        return None, pd.DataFrame()
 
-# -----------------------
-# Indicators & signal logic
-# -----------------------
-def calculate_rsi(prices, period=14):
-    series = pd.Series(prices).dropna()
-    if len(series) < period + 1:
-        return 50.0
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    last = rsi.iloc[-1]
-    return float(last) if not np.isnan(last) else 50.0
+def generate_signal_id(symbol: str, strategy: str, timeframe: str, entry: float):
+    """Generate a stable-ish unique ID for a signal so duplicates across refreshes can be recognized"""
+    base = f"{symbol}|{strategy}|{timeframe}|{round(entry, 6)}"
+    # Use uuid5 with namespace for stable deterministic id per same entry
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, base))
 
-def sma(prices, period):
-    series = pd.Series(prices).dropna()
-    if len(series) < period:
-        return float(series.mean()) if len(series) > 0 else 0.0
-    return float(series.iloc[-period:].mean())
+def create_mood_gauge(score: float, title: str, price_display: str = ""):
+    """Create a needle gauge with plotly matching the provided design"""
+    # Define colors based on score ranges
+    if score <= 25:
+        gauge_color = '#ef4444'  # Red for Extreme Fear
+        mood_text = "EXTREME FEAR"
+    elif score <= 45:
+        gauge_color = '#f97316'  # Orange for Fear
+        mood_text = "FEAR"
+    elif score <= 55:
+        gauge_color = '#fbbf24'  # Yellow for Neutral
+        mood_text = "NEUTRAL"
+    elif score <= 75:
+        gauge_color = '#84cc16'  # Light green for Greed
+        mood_text = "GREED"
+    else:
+        gauge_color = '#10b981'  # Green for Extreme Greed
+        mood_text = "EXTREME GREED"
+    
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=score,
+        number={'suffix': "  ", 'font': {'size': 24}},
+        title={'text': f"<br><span style='font-size:40px;color:gray'>{title}</span>", 'font': {'size': 20}},
+        gauge={
+            'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "Gold"},
+            'bar': {'color': gauge_color, 'thickness': 0.75},
+            'bgcolor': "white",
+            'borderwidth': 2,
+            'bordercolor': "gray",
+            'steps': [
+                {'range': [0, 25], 'color': '#fef2f2'},
+                {'range': [25, 45], 'color': '#fffbeb'},
+                {'range': [45, 55], 'color': '#f0fdf4'},
+                {'range': [55, 75], 'color': '#ecfdf5'},
+                {'range': [75, 100], 'color': '#dcfce7'}],
+            'threshold': {
+                'line': {'color': "black", 'width': 4},
+                'thickness': 0.75,
+                'value': score}
+        }
+    ))
+    
+    # Add mood text annotation
+    fig.add_annotation(
+        x=0.5, y=0.3,
+        text=f"<b>{mood_text}</b>",
+        showarrow=False,
+        font=dict(size=16, color=gauge_color),
+        xref="paper", yref="paper"
+    )
+    
+    # Add price display if provided
+    if price_display:
+        fig.add_annotation(
+            x=0.5, y=0.15,
+            text=f"<b>{price_display}</b>",
+            showarrow=False,
+            font=dict(size=25, color="darkblue"),
+            xref="paper", yref="paper"
+        )
+    
+    fig.update_layout(
+        height=280, 
+        margin=dict(t=60, b=40, l=20, r=20),
+        paper_bgcolor='rgba(0,0,0,0)',
+        font={'color': "darkblue", 'family': "Arial"}
+    )
+    return fig
 
-def get_signal_from_prices(prices):
-    clean = [p for p in prices if p and p > 0]
-    if len(clean) < 6:
-        return {"signal": "HOLD", "rsi": 50.0, "sma5": 0.0, "sma15": 0.0}
-    rsi_val = calculate_rsi(clean, 14)
-    s5 = sma(clean, 5)
-    s15 = sma(clean, 15)
-    if rsi_val < 30 and s5 > s15:
-        return {"signal": "BUY", "rsi": rsi_val, "sma5": s5, "sma15": s15}
-    if rsi_val > 70 and s5 < s15:
-        return {"signal": "SELL", "rsi": rsi_val, "sma5": s5, "sma15": s15}
-    return {"signal": "HOLD", "rsi": rsi_val, "sma5": s5, "sma15": s15}
+def calculate_support_resistance(df, window=20):
+    """Calculate simple support and resistance levels"""
+    if len(df) < window:
+        return None, None
+    
+    high = df['High'].rolling(window=window).max()
+    low = df['Low'].rolling(window=window).min()
+    
+    resistance = float(high.iloc[-1]) if not pd.isna(high.iloc[-1]) else None
+    support = float(low.iloc[-1]) if not pd.isna(low.iloc[-1]) else None
+    
+    return support, resistance
 
-def calculate_targets_and_sl(price, signal):
-    if price <= 0 or price is None:
+def calculate_pnl(trade, current_price):
+    """Calculate PnL for a trade"""
+    if trade['action'] == 'BUY':
+        pnl = (current_price - trade['entry']) * trade['qty']
+    else:  # SELL
+        pnl = (trade['entry'] - current_price) * trade['qty']
+    
+    pnl_percent = (pnl / (trade['entry'] * trade['qty'])) * 100
+    return pnl, pnl_percent
+
+def simple_momentum_strategy(symbol: str, df15m: pd.DataFrame):
+    """Very simple momentum strategy for demonstration: if last close > SMA(20) -> BUY signal"""
+    signals = []
+    if df15m is None or df15m.empty or len(df15m) < 25:
+        return signals
+    close = df15m['Close']
+    sma20 = close.rolling(20).mean()
+    last = float(close.iloc[-1])
+    sma_last = float(sma20.iloc[-1])
+    timeframe = "15m"
+    if last > sma_last and (last - sma_last)/sma_last > 0.002:  # small threshold
+        entry = last
+        stop_loss = last - (last * 0.01)  # 1% SL
+        target1 = last * 1.01
+        signal_id = generate_signal_id(symbol, "momentum_15m", timeframe, entry)
+        signals.append(dict(
+            id=signal_id, symbol=symbol, action="BUY", strategy="momentum_15m", timeframe=timeframe,
+            entry=entry, stop_loss=stop_loss, target1=target1, confidence=0.7, timestamp=time.time()
+        ))
+    elif last < sma_last and (sma_last - last)/sma_last > 0.002:
+        entry = last
+        stop_loss = last + (last * 0.01)
+        target1 = last * 0.99
+        signal_id = generate_signal_id(symbol, "momentum_15m", timeframe, entry)
+        signals.append(dict(
+            id=signal_id, symbol=symbol, action="SELL", strategy="momentum_15m", timeframe=timeframe,
+            entry=entry, stop_loss=stop_loss, target1=target1, confidence=0.68, timestamp=time.time()
+        ))
+    return signals
+
+def sma_crossover_strategy(symbol: str, df15m: pd.DataFrame):
+    """Simple SMA crossover: 5-period over 20-period"""
+    signals = []
+    if df15m is None or df15m.empty or len(df15m) < 30:
+        return signals
+    close = df15m['Close']
+    sma5 = close.rolling(5).mean()
+    sma20 = close.rolling(20).mean()
+    if float(sma5.iloc[-1]) > float(sma20.iloc[-1]) and float(sma5.iloc[-2]) <= float(sma20.iloc[-2]):
+        entry = float(close.iloc[-1])
+        signal_id = generate_signal_id(symbol, "sma_5_20", "15m", entry)
+        signals.append(dict(
+            id=signal_id, symbol=symbol, action="BUY", strategy="sma_5_20", timeframe="15m",
+            entry=entry, stop_loss=entry - entry*0.01, target1=entry*1.01, confidence=0.65, timestamp=time.time()
+        ))
+    if float(sma5.iloc[-1]) < float(sma20.iloc[-1]) and float(sma5.iloc[-2]) >= float(sma20.iloc[-2]):
+        entry = float(close.iloc[-1])
+        signal_id = generate_signal_id(symbol, "sma_5_20", "15m", entry)
+        signals.append(dict(
+            id=signal_id, symbol=symbol, action="SELL", strategy="sma_5_20", timeframe="15m",
+            entry=entry, stop_loss=entry + entry*0.01, target1=entry*0.99, confidence=0.63, timestamp=time.time()
+        ))
+    return signals
+
+def generate_signals_for_symbol(symbol: str):
+    """Generate signals for one symbol using available simple strategies (15m)"""
+    _, df15m = fetch_latest_close(symbol, period="7d", interval="15m")
+    signals = []
+    signals += simple_momentum_strategy(symbol, df15m)
+    signals += sma_crossover_strategy(symbol, df15m)
+    return signals
+
+def execute_paper_trade(signal: dict):
+    """Execute a paper trade enforcing FIXED allocation per trade and preventing duplicates"""
+    sig_id = signal["id"]
+    if sig_id in st.session_state.executed_signal_ids:
+        return None  # already executed previously
+    entry = float(signal["entry"])
+    if entry <= 0:
         return None
-    if signal == "BUY":
-        return {
-            "entry": price,
-            "t1": price * 1.01,
-            "t2": price * 1.02,
-            "t3": price * 1.03,
-            "sl": price * 0.99
-        }
-    elif signal == "SELL":
-        return {
-            "entry": price,
-            "t1": price * 0.99,
-            "t2": price * 0.98,
-            "t3": price * 0.97,
-            "sl": price * 1.01
-        }
+    qty = int(FIXED_ALLOCATION / entry)
+    if qty <= 0:
+        return None
+    
+    # Calculate support and resistance
+    _, df = fetch_latest_close(signal["symbol"], period="7d", interval="15m")
+    support, resistance = calculate_support_resistance(df)
+    
+    # Create trade record
+    trade = dict(
+        id=f"T{len(st.session_state.paper_trades)+1:05d}",
+        signal_id=sig_id,
+        symbol=signal["symbol"],
+        action=signal["action"],
+        entry=entry,
+        qty=qty,
+        entry_time=str(datetime.now()),
+        stop_loss=signal.get("stop_loss"),
+        target1=signal.get("target1"),
+        strategy=signal.get("strategy"),
+        support=support,
+        resistance=resistance,
+        status="OPEN"
+    )
+    # Deduct allocated capital from balance (reserve)
+    st.session_state.balance -= FIXED_ALLOCATION
+    st.session_state.paper_trades.append(trade)
+    st.session_state.executed_signal_ids.add(sig_id)
+    return trade
+
+def close_trade(trade_id, close_price):
+    """Close a paper trade and move to history"""
+    for i, trade in enumerate(st.session_state.paper_trades):
+        if trade['id'] == trade_id:
+            # Calculate final PnL
+            pnl, pnl_percent = calculate_pnl(trade, close_price)
+            
+            # Create history record
+            history_trade = trade.copy()
+            history_trade['exit_price'] = close_price
+            history_trade['exit_time'] = str(datetime.now())
+            history_trade['pnl'] = pnl
+            history_trade['pnl_percent'] = pnl_percent
+            history_trade['status'] = "CLOSED"
+            
+            # Add to history and remove from open trades
+            st.session_state.trade_history.append(history_trade)
+            st.session_state.paper_trades.pop(i)
+            
+            # Return capital plus PnL
+            st.session_state.balance += FIXED_ALLOCATION + pnl
+            return history_trade
     return None
 
-# -----------------------
-# Markets config
-# -----------------------
-MARKETS = {
-    "GOLD (FUT)": "GC=F",
-    "BITCOIN": "BTC-USD",
-    "ETHEREUM": "ETH-USD",
-    "XRP": "XRP-USD",
-    "SOLANA": "SOL-USD",
-    "EUR/USD": "EURUSD=X",
-    "GBP/USD": "GBPUSD=X",
-    "USD/JPY": "USDJPY=X"
-}
+# ----- Setup Auto-Refresh -----
+signal_refresh_needed, price_refresh_needed, current_time = setup_auto_refresh()
 
-# -----------------------
-# App state initialize
-# -----------------------
-st.set_page_config(page_title="Market Terminal — Gold/Crypto/Forex (v3)", layout="wide", page_icon="💱")
-st.markdown(STYLES, unsafe_allow_html=True)
-st.title("💱 Market Terminal — Gold, Crypto & Forex (Auto Tracker)")
+# ----- Sidebar -----
+st.sidebar.header("Configuration")
+market_choice = st.sidebar.selectbox("Market", list(MARKETS.keys()), index=0)
+selected_symbols = st.sidebar.multiselect("Symbols", MARKETS[market_choice], default=MARKETS[market_choice])
+st.sidebar.markdown("---")
+st.sidebar.header("Auto-refresh")
+auto_refresh_signals = st.sidebar.checkbox("Auto-refresh signals (2 min)", value=True)
+auto_refresh_prices = st.sidebar.checkbox("Auto-refresh prices (30 sec)", value=True)
+st.sidebar.write("Signals refresh every 120s, prices refresh every 30s when enabled.")
 
-if "initialized_v3" not in st.session_state:
-    st.session_state.initialized_v3 = True
-    st.session_state.price_history = {k: [] for k in MARKETS.keys()}
-    st.session_state.ohlc = {}
-    st.session_state.last_signals = {}
-    st.session_state.targets = {}
-    st.session_state.signal_alerts = {}
-    st.session_state.refresh_interval = 25
-    st.session_state.auto_refresh = True
-    st.session_state.update_count = 0
-    ensure_trade_log()
+st.sidebar.markdown("---")
+st.sidebar.header("Paper trading")
+st.sidebar.write("Fixed allocation per trade: $%d" % FIXED_ALLOCATION)
+st.sidebar.metric("Balance (demo)", f"${st.session_state.balance:,.2f}")
 
-# -----------------------
-# Sidebar controls & strategy explanation
-# -----------------------
-with st.sidebar:
-    st.header("Controls")
-    st.checkbox("Auto Refresh", value=st.session_state.auto_refresh, key="auto_refresh_v3")
-    st.session_state.auto_refresh = st.session_state.auto_refresh_v3
-    st.slider("Refresh Interval (seconds)", 10, 120, st.session_state.refresh_interval, key="refresh_interval_v3")
-    st.session_state.refresh_interval = st.session_state.refresh_interval_v3
-    st.markdown("---")
-    st.subheader("Strategy (RSI + SMA)")
-    st.markdown("""
-    - **RSI(14)**: oversold <30, overbought >70  
-    - **SMA5 / SMA15**: short vs mid trend  
-    - **BUY** when RSI < 30 **and** SMA5 > SMA15  
-    - **SELL** when RSI > 70 **and** SMA5 < SMA15  
-    - **Targets** (T1/T2/T3) are 1% / 2% / 3% from entry; **SL** = 1% adverse
-    """)
-    st.markdown("---")
-    st.subheader("Trade Log")
-    if st.button("Open trade log (CSV)"):
-        df = load_trade_log()
-        st.write(df.tail(20))
-    if st.button("Clear trade log (CAUTION)"):
-        # backup then clear
-        if os.path.exists(TRADE_LOG_FILE):
-            backup = TRADE_LOG_FILE.replace(".csv", f"_{int(time.time())}.bak.csv")
-            os.rename(TRADE_LOG_FILE, backup)
-        ensure_trade_log()
-        st.success("Trade log cleared (backup made if existed).")
-    st.markdown("---")
-    st.caption("Note: Auto-tracking marks trades based on live price reaching targets/SL.")
+# ----- Generate / Refresh Signals -----
+# Price refresh path (do not rerun the whole app to update prices frequently)
+if price_refresh_needed and auto_refresh_prices:
+    # Update last prices cache for dashboard view
+    for sym in selected_symbols:
+        price, _ = fetch_latest_close(sym, period="7d", interval="15m")
+        if price is not None:
+            st.session_state.last_prices[sym] = price
+    st.session_state.last_price_refresh = current_time
 
-# -----------------------
-# Fetch latest OHLC snapshot (1m)
-# -----------------------
-def fetch_ohlc(sym):
-    try:
-        df = yf.Ticker(sym).history(period="1d", interval="1m")
-        if df is None or df.empty:
-            return None
-        open_price = float(df["Open"].iloc[0])
-        current = float(df["Close"].iloc[-1])
-        high = float(df["High"].max())
-        low = float(df["Low"].min())
-        vol = int(df["Volume"].sum()) if "Volume" in df else 0
-        change = current - open_price
-        pct = (change / open_price) * 100 if open_price != 0 else 0
-        return {"open": open_price, "current": current, "high": high, "low": low, "vol": vol, "change": change, "pct": pct}
-    except Exception as e:
-        return None
+# Signals refresh path (every 2 minutes or when manually requested)
+manual_refresh = st.sidebar.button("Refresh Signals Now")
+if auto_refresh_signals and signal_refresh_needed or manual_refresh:
+    # Generate new signals for current selection
+    new_signals = []
+    for sym in selected_symbols:
+        try:
+            new_signals.extend(generate_signals_for_symbol(sym))
+        except Exception:
+            pass
+    # Merge with previous signals but avoid duplicates (same signal id)
+    existing_ids = {s["id"] for s in st.session_state.signals}
+    merged = st.session_state.signals.copy()
+    added = 0
+    for s in new_signals:
+        if s["id"] not in existing_ids:
+            merged.append(s)
+            added += 1
+    # Update session signals and refresh timestamp
+    st.session_state.signals = merged
+    st.session_state.last_signal_refresh = time.time()
+    if auto_refresh_signals and signal_refresh_needed:
+        # Force a quick re-run so UI updates immediately
+        st.rerun()
 
-# -----------------------
-# Update routine: fetch, compute signals, log new signals, track open trades
-# -----------------------
-def run_update():
-    prices = {}
-    signals = {}
-    resolved_trades = []
-    for name, ticker in MARKETS.items():
-        ohlc = fetch_ohlc(ticker)
-        if ohlc is None:
-            continue
-        prices[name] = ohlc["current"]
-        # update history
-        hist = st.session_state.price_history.get(name, [])
-        hist.append(ohlc["current"])
-        st.session_state.price_history[name] = hist[-200:]  # keep last 200
-        # indicators & signal
-        sig_data = get_signal_from_prices(st.session_state.price_history[name])
-        signals[name] = {"signal": sig_data["signal"], "rsi": sig_data["rsi"], "sma5": sig_data["sma5"], "sma15": sig_data["sma15"], "ohlc": ohlc}
-        # always compute + store targets for BUY/SELL
-        if signals[name]["signal"] in ["BUY", "SELL"]:
-            t = calculate_targets_and_sl(ohlc["current"], signals[name]["signal"])
-            st.session_state.targets[name] = t
-        else:
-            st.session_state.targets.pop(name, None)
-        # handle signal change => log new trade (if BUY/SELL and not same as last)
-        last_signal = st.session_state.last_signals.get(name, "HOLD")
-        if signals[name]["signal"] in ["BUY", "SELL"] and signals[name]["signal"] != last_signal:
-            # create new trade log entry
-            tid = int(time.time()*1000)  # unique id
-            t = st.session_state.targets.get(name)
-            row = {
-                "id": tid,
-                "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-                "market": name,
-                "signal": signals[name]["signal"],
-                "entry": round(t["entry"], 6) if t else None,
-                "t1": round(t["t1"], 6) if t else None,
-                "t2": round(t["t2"], 6) if t else None,
-                "t3": round(t["t3"], 6) if t else None,
-                "sl": round(t["sl"], 6) if t else None,
-                "status": "OPEN",
-                "result_time": "",
-                "result_type": "",
-                "result_price": "",
-                "notes": "AUTO-LOG"
-            }
-            append_trade_row(row)
-            st.session_state.signal_alerts[name] = True
-            # play audio & visual toast
-            play_sound_and_toast(f"{signals[name]['signal']} — {name}")
-        st.session_state.last_signals[name] = signals[name]["signal"]
+# ----- Tabs -----
+tab1, tab2, tab3, tab4 = st.tabs(["Live Dashboard", "Signals", "Paper Trading", "Trade History"])
 
-    # Now check open trades and resolve if price reached any target/SL
-    df = load_trade_log()
-    open_trades = df[df["status"] == "OPEN"]
-    for _, trade in open_trades.iterrows():
-        tid = int(trade["id"])
-        market = trade["market"]
-        entry = float(trade["entry"]) if not pd.isna(trade["entry"]) else None
-        sl = float(trade["sl"]) if not pd.isna(trade["sl"]) else None
-        t1 = float(trade["t1"]) if not pd.isna(trade["t1"]) else None
-        t2 = float(trade["t2"]) if not pd.isna(trade["t2"]) else None
-        t3 = float(trade["t3"]) if not pd.isna(trade["t3"]) else None
-        # current price
-        cur_price = prices.get(market)
-        if cur_price is None:
-            continue
-        signal = trade["signal"]
-        resolved = False
-        result_type = ""
-        # BUY: check targets upward first (T1..T3) then SL below
-        if signal == "BUY":
-            if t1 and cur_price >= t1:
-                resolved = True; result_type = "T1"
-                result_price = cur_price
-            if not resolved and t2 and cur_price >= t2:
-                resolved = True; result_type = "T2"; result_price = cur_price
-            if not resolved and t3 and cur_price >= t3:
-                resolved = True; result_type = "T3"; result_price = cur_price
-            if not resolved and sl and cur_price <= sl:
-                resolved = True; result_type = "SL"; result_price = cur_price
-        # SELL: check targets downward first (T1..T3) then SL above
-        elif signal == "SELL":
-            if t1 and cur_price <= t1:
-                resolved = True; result_type = "T1"; result_price = cur_price
-            if not resolved and t2 and cur_price <= t2:
-                resolved = True; result_type = "T2"; result_price = cur_price
-            if not resolved and t3 and cur_price <= t3:
-                resolved = True; result_type = "T3"; result_price = cur_price
-            if not resolved and sl and cur_price >= sl:
-                resolved = True; result_type = "SL"; result_price = cur_price
-        if resolved:
-            # Mark trade as WON if target hit (T1/T2/T3), LOSS if SL
-            status = "CLOSED"
-            outcome = "WON" if result_type.startswith("T") else "LOSS"
-            update_trade_row(tid, {
-                "status": status,
-                "result_time": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-                "result_type": result_type,
-                "result_price": round(result_price, 6),
-                "notes": f"AUTO_RESOLVED"
-            })
-            resolved_trades.append((tid, market, outcome, result_type))
-            # play small sound/notify on resolution
-            play_sound_and_toast(f"{market} trade {outcome} ({result_type})")
-    st.session_state.update_count += 1
-    return prices, signals, resolved_trades
-
-# -----------------------
-# Render dashboard
-# -----------------------
-def render_dashboard(prices, signals):
+# ----- TAB 1: Live Dashboard -----
+with tab1:
+    st.session_state.current_tab = "Live Dashboard"
+    st.subheader("Live Dashboard — Prices & Market Mood")
+    
     # Top metrics
-    df_log = load_trade_log()
-    total_closed = len(df_log[df_log["status"] == "CLOSED"])
-    total_open = len(df_log[df_log["status"] == "OPEN"])
-    wins = len(df_log[(df_log["status"] == "CLOSED") & (df_log["result_type"].str.startswith("T"))])
-    losses = len(df_log[(df_log["status"] == "CLOSED") & (df_log["result_type"] == "SL")])
-    win_rate = (wins / total_closed * 100) if total_closed > 0 else 0.0
-    avg_return = None
-    if total_closed > 0:
-        # crude return estimate using entry->result_price
-        closed = df_log[df_log["status"] == "CLOSED"].copy()
-        closed["entry"] = pd.to_numeric(closed["entry"], errors="coerce")
-        closed["result_price"] = pd.to_numeric(closed["result_price"], errors="coerce")
-        closed["pct_return"] = np.where(closed["signal"] == "BUY",
-                                        (closed["result_price"] - closed["entry"]) / closed["entry"] * 100,
-                                        (closed["entry"] - closed["result_price"]) / closed["entry"] * 100)
-        avg_return = closed["pct_return"].mean()
-    # layout header
-    col1, col2, col3, col4 = st.columns([2,1,1,1])
-    with col1:
-        st.markdown("<div class='card header'><div><h2 style='margin:0'>📊 Live Market Dashboard</h2><div class='small-muted'>RSI + SMA strategy</div></div>"
-                    f"<div style='text-align:right'><div class='metric'>{st.session_state.update_count} updates</div><div class='small-muted'>{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC</div></div></div>",
-                    unsafe_allow_html=True)
-    with col2:
-        st.markdown(f"<div class='card'><div class='small-muted'>Open Trades</div><div class='metric'>{total_open}</div></div>", unsafe_allow_html=True)
-    with col3:
-        st.markdown(f"<div class='card'><div class='small-muted'>Closed Trades</div><div class='metric'>{total_closed}</div></div>", unsafe_allow_html=True)
-    with col4:
-        st.markdown(f"<div class='card'><div class='small-muted'>Win Rate</div><div class='metric'>{win_rate:.1f}%</div></div>", unsafe_allow_html=True)
+    col1, col2, col3, col4 = st.columns(4)
+    total_signals = len([s for s in st.session_state.signals if s["symbol"] in selected_symbols])
+    col1.metric("Total Signals", total_signals)
+    col2.metric("Buy Signals", len([s for s in st.session_state.signals if s.get("action")=="BUY" and s["symbol"] in selected_symbols]))
+    col3.metric("Sell Signals", len([s for s in st.session_state.signals if s.get("action")=="SELL" and s["symbol"] in selected_symbols]))
+    col4.metric("Open Trades", len(st.session_state.paper_trades))
+    
+    st.markdown("----")
+    
+    # Market Mood Index (MMI) gauge
+    st.subheader("Market Mood Index (MMI)")
+    mmi_col1, mmi_col2 = st.columns([1, 2])
+    
+    with mmi_col1:
+        # Overall market mood (average of all selected symbols)
+        overall_mood = 50.0
+        mood_scores = []
+        for sym in selected_symbols:
+            df = yf.download(sym, period="7d", interval="15m", progress=False)
+            if not df.empty and len(df['Close']) > 10:
+                returns = df['Close'].pct_change().fillna(0)
+                mood_score = float(np.clip(50 + returns.tail(15).mean() * 1000, 0, 100))
+                mood_scores.append(mood_score)
+        
+        if mood_scores:
+            overall_mood = sum(mood_scores) / len(mood_scores)
+        
+        st.metric("Overall Market Mood", f"{overall_mood:.1f}")
+        st.write("**Sentiment Levels:**")
+        st.write("• 0-25: Extreme Fear")
+        st.write("• 26-45: Fear") 
+        st.write("• 46-55: Neutral")
+        st.write("• 56-75: Greed")
+        st.write("• 76-100: Extreme Greed")
+    
+    with mmi_col2:
+        fig = create_mood_gauge(overall_mood, "Market Mood Index", "Updated recently")
+        st.plotly_chart(fig, use_container_width=True)
+    
+    st.markdown("----")
+    
+    # Individual symbol gauges
+    st.subheader("Individual Symbol Analysis")
+    pick = selected_symbols[:6]  # Show up to 6 symbols
+    cols = st.columns(3)
+    for i, sym in enumerate(pick):
+        with cols[i % 3]:
+            price = st.session_state.last_prices.get(sym) or fetch_latest_close(sym)[0] or 0.0
+            # Mood score based on recent performance
+            df = yf.download(sym, period="7d", interval="15m", progress=False)
+            mood_score = 50.0
+            if not df.empty and len(df['Close']) > 10:
+                returns = df['Close'].pct_change().fillna(0)
+                mood_score = float(np.clip(50 + returns.tail(15).mean() * 1000, 0, 100))
+            
+            # Clean symbol name for display
+            display_name = sym.replace("-USD", "").replace("=X", "")
+            st.markdown(f'<div class="mood-gauge-container">', unsafe_allow_html=True)
+            fig = create_mood_gauge(mood_score, display_name, f"${price:.4f}" if price > 1 else f"${price:.6f}")
+            st.plotly_chart(fig, use_container_width=True)
+            st.markdown('</div>', unsafe_allow_html=True)
 
-    # Two-column grid for market cards
-    markets = list(MARKETS.keys())
-    left_col, right_col = st.columns(2)
-    for i, name in enumerate(markets):
-        s = signals.get(name)
-        price = prices.get(name)
-        target_info = st.session_state.targets.get(name)
-        card_html = "<div class='card"
-        # pulse if alert
-        if st.session_state.signal_alerts.get(name, False) and s and s["signal"] in ["BUY","SELL"]:
-            card_html += " pulse"
-        card_html += f"'>"
-        # header row
-        sig = s["signal"] if s else "N/A"
-        emoji = "🟢" if sig == "BUY" else "🔴" if sig == "SELL" else "⚪"
-        color = "#00FF00" if sig == "BUY" else "#FF4444" if sig == "SELL" else "#888888"
-        card_html += f"<div style='display:flex; justify-content:space-between; align-items:center;'>"
-        card_html += f"<div><strong style='font-size:16px'>{name} {emoji}</strong><div class='small-muted'>Ticker: {MARKETS[name]}</div></div>"
-        card_html += f"<div style='text-align:right'><div style='font-weight:700; font-size:18px'>{format_price_for_display(name, price)}</div>"
-        if s:
-            card_html += f"<div class='small-muted'>RSI {s['rsi']:.1f} | SMA5 {s['sma5']:.4f} | SMA15 {s['sma15']:.4f}</div>"
-        card_html += "</div></div><hr style='opacity:0.06'/>"
-        # targets + entry + sl
-        if target_info:
-            entry = target_info["entry"]
-            t1 = target_info["t1"]
-            t2 = target_info["t2"]
-            t3 = target_info["t3"]
-            sl = target_info["sl"]
-            card_html += f"<div><strong>Entry:</strong> {format_price_for_display(name, entry)} &nbsp;&nbsp;"
-            card_html += f"<strong>SL:</strong> {format_price_for_display(name, sl)}</div>"
-            card_html += "<div style='margin-top:6px'>"
-            card_html += f"<span class='small-muted'>T1:</span> <strong>{format_price_for_display(name,t1)}</strong> &nbsp; "
-            card_html += f"<span class='small-muted'>T2:</span> <strong>{format_price_for_display(name,t2)}</strong> &nbsp; "
-            card_html += f"<span class='small-muted'>T3:</span> <strong>{format_price_for_display(name,t3)}</strong>"
-            card_html += "</div>"
-        else:
-            card_html += "<div class='small-muted'>No active targets</div>"
-        card_html += "</div>"  # end card
-        if i % 2 == 0:
-            left_col.markdown(card_html, unsafe_allow_html=True)
-        else:
-            right_col.markdown(card_html, unsafe_allow_html=True)
-    # Performance panel (charts + logs)
-    st.markdown("---")
-    perf_col1, perf_col2 = st.columns([2,1])
-    with perf_col1:
-        st.subheader("📈 Performance Summary")
-        st.write(f"Total closed trades: {total_closed} | Wins: {wins} | Losses: {losses} | Avg return: {avg_return:.2f}% " if avg_return is not None else f"Total closed trades: {total_closed}")
-        # show last 20 closed trades
-        closed_df = df_log[df_log["status"] == "CLOSED"].sort_values("result_time", ascending=False)
-        if not closed_df.empty:
-            st.dataframe(closed_df.head(20)[["timestamp","market","signal","entry","result_price","result_type","result_time"]], use_container_width=True)
-        else:
-            st.info("No closed trades yet.")
-    with perf_col2:
-        st.subheader("Recent Open Trades")
-        open_df = df_log[df_log["status"] == "OPEN"]
-        if not open_df.empty:
-            st.dataframe(open_df[["timestamp","market","signal","entry","t1","t2","t3","sl"]], use_container_width=True)
-        else:
-            st.info("No open trades.")
-    st.markdown("---")
-    st.caption("Trades are auto-logged and auto-resolved when live price reaches target or SL. Use the sidebar to view or clear the CSV log.")
+# ----- TAB 2: Signals -----
+with tab2:
+    st.session_state.current_tab = "Signals"
+    st.subheader("Trading Signals (auto-updates every 2 minutes)")
+    
+    if not st.session_state.signals:
+        st.info("No signals generated yet. Click 'Refresh Signals Now' or enable auto-refresh.")
+    else:
+        # Show table of signals for selected symbols (without signal ID)
+        table = pd.DataFrame(st.session_state.signals)
+        if not table.empty:
+            table_display = table[table['symbol'].isin(selected_symbols)].copy()
+            table_display['timestamp'] = table_display['timestamp'].apply(lambda t: datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M:%S"))
+            
+            # Remove signal ID from display
+            display_columns = ['symbol', 'action', 'strategy', 'timeframe', 'entry', 'stop_loss', 'target1', 'confidence', 'timestamp']
+            st.dataframe(
+                table_display[display_columns].rename(columns={
+                    'timeframe': 'TF', 
+                    'target1': 'Take Profit',
+                    'stop_loss': 'Stop Loss'
+                }), 
+                use_container_width=True
+            )
+            
+            st.markdown("----")
+            
+            # Execution controls
+            auto_execute = st.checkbox("Auto-execute high confidence signals (>=0.7)", value=False)
+            exec_cols = st.columns([3, 1, 1])
+            
+            with exec_cols[1]:
+                if st.button("Execute top signal"):
+                    # pick highest confidence available that isn't executed
+                    available = [s for s in st.session_state.signals if s['symbol'] in selected_symbols and s['id'] not in st.session_state.executed_signal_ids]
+                    if available:
+                        available = sorted(available, key=lambda x: x['confidence'], reverse=True)
+                        trade = execute_paper_trade(available[0])
+                        if trade:
+                            st.success(f"Executed trade {trade['id']} for {trade['symbol']}")
+                            st.rerun()
+                        else:
+                            st.error("Could not execute trade (maybe allocation too small).")
+                    else:
+                        st.warning("No available signals to execute.")
+            
+            # Auto-execute logic
+            if auto_execute:
+                executed_count = 0
+                for s in sorted(st.session_state.signals, key=lambda x: x['confidence'], reverse=True):
+                    if s['symbol'] not in selected_symbols:
+                        continue
+                    if s['confidence'] >= 0.7 and s['id'] not in st.session_state.executed_signal_ids:
+                        t = execute_paper_trade(s)
+                        if t:
+                            executed_count += 1
+                if executed_count > 0:
+                    st.success(f"Auto-executed {executed_count} trades (fixed ${FIXED_ALLOCATION} allocation each).")
+                    st.rerun()
 
-# -----------------------
-# Run and auto-refresh
-# -----------------------
-prices, signals, resolved = run_update()
-render_dashboard(prices, signals)
+# ----- TAB 3: Paper Trading -----
+with tab3:
+    st.session_state.current_tab = "Paper Trading"
+    st.subheader("Paper Trading Dashboard")
+    st.markdown(f"**Balance:** ${st.session_state.balance:,.2f}  •  **Allocated per trade:** ${FIXED_ALLOCATION:,.2f}")
+    
+    if st.session_state.paper_trades:
+        # Create enhanced trades dataframe with PnL
+        enhanced_trades = []
+        for trade in st.session_state.paper_trades:
+            current_price = st.session_state.last_prices.get(trade['symbol'], trade['entry'])
+            pnl, pnl_percent = calculate_pnl(trade, current_price)
+            
+            enhanced_trade = trade.copy()
+            enhanced_trade['current_price'] = current_price
+            enhanced_trade['pnl'] = pnl
+            enhanced_trade['pnl_percent'] = pnl_percent
+            enhanced_trades.append(enhanced_trade)
+        
+        df_trades = pd.DataFrame(enhanced_trades)
+        
+        # Display columns: Remove signal_id, add PnL, Support/Resistance
+        display_columns = ['id', 'symbol', 'action', 'entry', 'current_price', 'qty', 'pnl', 'pnl_percent', 
+                          'stop_loss', 'target1', 'support', 'resistance', 'strategy', 'entry_time']
+        
+        st.dataframe(df_trades[display_columns], use_container_width=True)
+        
+        # Close trade functionality
+        st.subheader("Close Trades")
+        trade_options = {f"{trade['id']} - {trade['symbol']} - {trade['action']}": trade['id'] 
+                        for trade in st.session_state.paper_trades}
+        
+        if trade_options:
+            selected_trade = st.selectbox("Select trade to close:", list(trade_options.keys()))
+            close_price = st.number_input("Close price:", value=st.session_state.last_prices.get(
+                st.session_state.paper_trades[0]['symbol'], 
+                st.session_state.paper_trades[0]['entry']
+            ), step=0.0001, format="%.6f")
+            
+            if st.button("Close Trade"):
+                closed_trade = close_trade(trade_options[selected_trade], close_price)
+                if closed_trade:
+                    st.success(f"Closed trade {closed_trade['id']}. PnL: ${closed_trade['pnl']:.2f} ({closed_trade['pnl_percent']:.2f}%)")
+                    st.rerun()
+                else:
+                    st.error("Failed to close trade.")
+    else:
+        st.info("No paper trades executed yet. Execute signals from the Signals tab.")
 
-# clear visual alert markers after display cycle
-st.session_state.signal_alerts = {}
+# ----- TAB 4: Trade History -----
+with tab4:
+    st.session_state.current_tab = "Trade History"
+    st.subheader("Trade History")
+    
+    if st.session_state.trade_history:
+        df_history = pd.DataFrame(st.session_state.trade_history)
+        
+        # Calculate totals
+        total_pnl = df_history['pnl'].sum()
+        winning_trades = len(df_history[df_history['pnl'] > 0])
+        losing_trades = len(df_history[df_history['pnl'] < 0])
+        win_rate = (winning_trades / len(df_history)) * 100 if len(df_history) > 0 else 0
+        
+        # Display metrics
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Trades", len(df_history))
+        col2.metric("Win Rate", f"{win_rate:.1f}%")
+        col3.metric("Winning Trades", winning_trades)
+        col4.metric("Total PnL", f"${total_pnl:.2f}")
+        
+        # Display history table
+        history_columns = ['id', 'symbol', 'action', 'entry', 'exit_price', 'qty', 'pnl', 'pnl_percent', 
+                          'strategy', 'entry_time', 'exit_time']
+        st.dataframe(df_history[history_columns], use_container_width=True)
+        
+        # Option to clear history
+        if st.button("Clear Trade History"):
+            st.session_state.trade_history = []
+            st.rerun()
+    else:
+        st.info("No trade history yet. Close some trades to see history here.")
 
-# Auto refresh logic: rerun periodically (Streamlit environment)
-if st.session_state.auto_refresh:
-    time.sleep(st.session_state.refresh_interval)
-    st.experimental_rerun()
+# ----- Footer / Debug -----
+st.markdown("---")
+st.markdown(f"<div class='small'>Last signal refresh: {datetime.fromtimestamp(st.session_state.last_signal_refresh) if st.session_state.last_signal_refresh>0 else 'Never'}</div>", unsafe_allow_html=True)
+st.markdown(f"<div class='small'>Last price refresh: {datetime.fromtimestamp(st.session_state.last_price_refresh) if st.session_state.last_price_refresh>0 else 'Never'}</div>", unsafe_allow_html=True)
+
+# ----- Auto-refresh JavaScript -----
+if auto_refresh_prices or auto_refresh_signals:
+    # Determine which refresh to use based on current tab
+    if st.session_state.current_tab == "Live Dashboard" and auto_refresh_prices:
+        refresh_seconds = PRICE_REFRESH_SECONDS
+        time_since_refresh = time.time() - st.session_state.last_price_refresh
+    elif st.session_state.current_tab in ["Signals", "Live Dashboard"] and auto_refresh_signals:
+        refresh_seconds = SIGNAL_REFRESH_SECONDS
+        time_since_refresh = time.time() - st.session_state.last_signal_refresh
+    else:
+        refresh_seconds = None
+    
+    if refresh_seconds:
+        time_remaining = max(0, refresh_seconds - time_since_refresh)
+        
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #FF6B6B, #4ECDC4); color: white; padding: 10px; border-radius: 10px; text-align: center; margin: 10px 0;">
+            🔄 AUTO-REFRESH ACTIVE | Next update in {int(time_remaining)} seconds
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Auto-refresh using JavaScript when time is up
+        if time_remaining <= 1:
+            st.markdown("""
+            <script>
+            setTimeout(function() {
+                window.location.reload();
+            }, 1000);
+            </script>
+            """, unsafe_allow_html=True)
