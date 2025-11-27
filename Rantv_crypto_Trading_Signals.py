@@ -835,10 +835,9 @@ if (ema8 > ema21 > ema50 and live > vwap and adx_val > 20 and htf_trend == 1):
     score = 9
     strategy = "EMA_VWAP_Confluence"
 
-    # FIXED: Correct function call with full arguments
     target, stop_loss = self.calculate_intraday_target_sl(
         entry_price=live,
-        action="BUY",
+        action=action,
         atr=atr,
         current_price=live,
         support=support,
@@ -849,7 +848,8 @@ if (ema8 > ema21 > ema50 and live > vwap and adx_val > 20 and htf_trend == 1):
         "strategy": strategy,
         "action": action,
         "confidence": confidence,
+        "score": score,
+        "entry_price": live,
         "target": target,
-        "stop_loss": stop_loss,
-        "score": score
+        "stop_loss": stop_loss
     })
