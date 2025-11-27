@@ -27,7 +27,7 @@ MARKET_OPTIONS = ["CRYPTO"]
 
 # Major Cryptocurrencies
 CRYPTO_SYMBOLS = [
-    "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "LTC-USD",
+    "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "LTC-USD", "GC=F",
     "ADA-USD", "DOT-USD", "DOGE-USD", "AVAX-USD", "MATIC-USD",
     "LINK-USD", "ATOM-USD", "XLM-USD", "BCH-USD", "ETC-USD"
 ]
@@ -2119,3 +2119,4 @@ with tabs[7]:
 
 st.markdown("---")
 st.markdown("<div style='text-align:center; color: #6b7280;'>Enhanced Crypto Terminal Pro with BUY/SELL Signals & Market Analysis</div>", unsafe_allow_html=True)
+
