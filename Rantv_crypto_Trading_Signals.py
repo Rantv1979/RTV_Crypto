@@ -1402,28 +1402,41 @@ class MultiStrategyCryptoTrader:
         return signals[:20]
 
     def auto_execute_signals(self, signals):
-        executed = []
-        for signal in signals[:10]:
-            if not self.can_auto_trade():
-                break
-            if signal["symbol"] in self.positions:
-                continue
-            qty = int((self.cash * TRADE_ALLOC) / signal["entry"])
-            if qty > 0:
-                success, msg = self.execute_trade(
-                    symbol=signal["symbol"],
-                    action=signal["action"],
-                    quantity=qty,
-                    price=signal["entry"],
-                    stop_loss=signal["stop_loss"],
-                    target=signal["target"],
-                    win_probability=signal.get("win_probability", 0.75),
-                    auto_trade=True,
-                    strategy=signal.get("strategy")
-                )
-                if success:
-                    executed.append(msg)
+    executed = []
+    if not self.can_auto_trade():
         return executed
+        
+    for signal in signals[:10]:  # Limit to top 10 signals
+        if not self.can_auto_trade():
+            break
+            
+        # Skip if we already have a position in this symbol
+        if signal["symbol"] in self.positions:
+            continue
+            
+        # Calculate quantity based on available capital
+        qty = int((self.cash * TRADE_ALLOC) / signal["entry"])
+        if qty <= 0:
+            continue
+            
+        # Execute the trade
+        success, msg = self.execute_trade(
+            symbol=signal["symbol"],
+            action=signal["action"],
+            quantity=qty,
+            price=signal["entry"],
+            stop_loss=signal["stop_loss"],
+            target=signal["target"],
+            win_probability=signal.get("win_probability", 0.75),
+            auto_trade=True,
+            strategy=signal.get("strategy")
+        )
+        if success:
+            executed.append(msg)
+            # Add a small delay between executions
+            time.sleep(0.1)
+            
+    return executed
 
 # Initialize
 data_manager = EnhancedDataManager()
@@ -1645,7 +1658,7 @@ with tabs[0]:
     else:
         st.info("No strategy performance data available yet.")
 
-with tabs[1]:
+    with tabs[1]:
     st.session_state.current_tab = "🚦 Signals"
     st.subheader("Multi-Strategy BUY/SELL Signals")
     col1, col2 = st.columns([1, 2])
@@ -1657,8 +1670,20 @@ with tabs[1]:
             st.success("🔴 Auto Execution: ACTIVE")
         else:
             st.info("⚪ Auto Execution: INACTIVE")
+    
+    # Check if we should auto-generate signals (every 60 seconds for auto-execution)
+    auto_generate_signals = False
+    if trader.auto_execution and trader.can_auto_trade():
+        current_time = time.time()
+        if "last_auto_signal_time" not in st.session_state:
+            st.session_state.last_auto_signal_time = 0
+        
+        # Generate signals every 60 seconds when auto-execution is enabled
+        if current_time - st.session_state.last_auto_signal_time >= 60:
+            auto_generate_signals = True
+            st.session_state.last_auto_signal_time = current_time
             
-    if generate_btn or trader.auto_execution:
+    if generate_btn or auto_generate_signals or trader.auto_execution:
         with st.spinner("Scanning cryptos with enhanced BUY/SELL strategies..."):
             signals = trader.generate_quality_signals(universe, max_scan=max_scan, min_confidence=min_conf_percent/100.0, min_score=min_score)
         
@@ -1689,12 +1714,53 @@ with tabs[1]:
             
             st.dataframe(pd.DataFrame(data_rows), use_container_width=True)
             
+            # AUTO-EXECUTION LOGIC - This will now trigger automatically
             if trader.auto_execution and trader.can_auto_trade():
                 executed = trader.auto_execute_signals(signals)
                 if executed:
-                    st.success("Auto-execution completed:")
+                    st.success("🤖 Auto-execution completed:")
                     for msg in executed:
-                        st.write(f"✓ {msg}")
+                        st.write(f"✅ {msg}")
+                    # Force refresh to show updated positions
+                    st.rerun()
+                else:
+                    st.info("🤖 No new positions auto-executed (may already have positions or limits reached)")
+            
+            st.subheader("Manual Execution")
+            for s in signals:
+                col_a, col_b, col_c = st.columns([3,1,1])
+                with col_a:
+                    action_color = "🟢" if s["action"] == "BUY" else "🔴"
+                    st.write(f"{action_color} **{s['symbol'].replace('-USD','')}** - {s['action']} @ ${s['entry']:.2f} | Strategy: {s['strategy_name']} | Historical Win: {s.get('historical_accuracy',0.7):.1%} | R:R: {s['risk_reward']:.2f}")
+                with col_b:
+                    qty = int((trader.cash * TRADE_ALLOC) / s["entry"])
+                    st.write(f"Qty: {qty}")
+                with col_c:
+                    if st.button(f"Execute", key=f"exec_{s['symbol']}_{s['strategy']}"):
+                        success, msg = trader.execute_trade(
+                            symbol=s["symbol"], action=s["action"], quantity=qty, price=s["entry"],
+                            stop_loss=s["stop_loss"], target=s["target"], win_probability=s.get("win_probability",0.75),
+                            strategy=s.get("strategy")
+                        )
+                        if success:
+                            st.success(msg)
+                            st.rerun()
+        else:
+            st.info("No confirmed signals with current filters.")
+            
+    # Show auto-execution status
+    if trader.auto_execution:
+        st.markdown("---")
+        st.subheader("🤖 Auto-Execution Status")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.write(f"**Auto Trades Today:** {trader.auto_trades_count}/{MAX_AUTO_TRADES}")
+        with col2:
+            st.write(f"**Available Cash:** ${trader.cash:,.2f}")
+        with col3:
+            can_trade = trader.can_auto_trade()
+            status_color = "🟢" if can_trade else "🔴"
+            st.write(f"**Can Auto-Trade:** {status_color} {'YES' if can_trade else 'NO'}")
             
             st.subheader("Manual Execution")
             for s in signals:
@@ -2119,4 +2185,5 @@ with tabs[7]:
 
 st.markdown("---")
 st.markdown("<div style='text-align:center; color: #6b7280;'>Enhanced Crypto Terminal Pro with BUY/SELL Signals & Market Analysis</div>", unsafe_allow_html=True)
+
 
