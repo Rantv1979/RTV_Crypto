@@ -27,7 +27,7 @@ MARKET_OPTIONS = ["CRYPTO"]
 
 # Major Cryptocurrencies
 CRYPTO_SYMBOLS = [
-    "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "LTC-USD", "GC=F",
+    "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "LTC-USD",
     "ADA-USD", "DOT-USD", "DOGE-USD", "AVAX-USD", "MATIC-USD",
     "LINK-USD", "ATOM-USD", "XLM-USD", "BCH-USD", "ETC-USD"
 ]
@@ -1402,41 +1402,41 @@ class MultiStrategyCryptoTrader:
         return signals[:20]
 
     def auto_execute_signals(self, signals):
-    executed = []
-    if not self.can_auto_trade():
-        return executed
-        
-    for signal in signals[:10]:  # Limit to top 10 signals
+        executed = []
         if not self.can_auto_trade():
-            break
+            return executed
             
-        # Skip if we already have a position in this symbol
-        if signal["symbol"] in self.positions:
-            continue
-            
-        # Calculate quantity based on available capital
-        qty = int((self.cash * TRADE_ALLOC) / signal["entry"])
-        if qty <= 0:
-            continue
-            
-        # Execute the trade
-        success, msg = self.execute_trade(
-            symbol=signal["symbol"],
-            action=signal["action"],
-            quantity=qty,
-            price=signal["entry"],
-            stop_loss=signal["stop_loss"],
-            target=signal["target"],
-            win_probability=signal.get("win_probability", 0.75),
-            auto_trade=True,
-            strategy=signal.get("strategy")
-        )
-        if success:
-            executed.append(msg)
-            # Add a small delay between executions
-            time.sleep(0.1)
-            
-    return executed
+        for signal in signals[:10]:  # Limit to top 10 signals
+            if not self.can_auto_trade():
+                break
+                
+            # Skip if we already have a position in this symbol
+            if signal["symbol"] in self.positions:
+                continue
+                
+            # Calculate quantity based on available capital
+            qty = int((self.cash * TRADE_ALLOC) / signal["entry"])
+            if qty <= 0:
+                continue
+                
+            # Execute the trade
+            success, msg = self.execute_trade(
+                symbol=signal["symbol"],
+                action=signal["action"],
+                quantity=qty,
+                price=signal["entry"],
+                stop_loss=signal["stop_loss"],
+                target=signal["target"],
+                win_probability=signal.get("win_probability", 0.75),
+                auto_trade=True,
+                strategy=signal.get("strategy")
+            )
+            if success:
+                executed.append(msg)
+                # Add a small delay between executions
+                time.sleep(0.1)
+                
+        return executed
 
 # Initialize
 data_manager = EnhancedDataManager()
@@ -1584,6 +1584,39 @@ with cols[3]:
     </div>
     """, unsafe_allow_html=True)
 
+# Auto-execution status indicator
+if trader.auto_execution:
+    st.markdown("---")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown(f"""
+        <div class="metric-card" style="border-left: 4px solid #059669;">
+            <div style="font-size: 12px; color: #6b7280;">Auto Execution</div>
+            <div style="font-size: 20px; font-weight: bold; color: #059669;">ACTIVE</div>
+            <div style="font-size: 10px; color: #6b7280;">60s intervals</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col2:
+        st.markdown(f"""
+        <div class="metric-card">
+            <div style="font-size: 12px; color: #6b7280;">Auto Trades</div>
+            <div style="font-size: 20px; font-weight: bold; color: #1e3a8a;">{trader.auto_trades_count}/{MAX_AUTO_TRADES}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col3:
+        # Calculate next auto execution time
+        current_time = time.time()
+        if "last_auto_signal_time" not in st.session_state:
+            st.session_state.last_auto_signal_time = 0
+        next_scan = max(0, 60 - (current_time - st.session_state.last_auto_signal_time))
+        next_text = f"{int(next_scan)}s" if next_scan > 0 else "Now"
+        st.markdown(f"""
+        <div class="metric-card">
+            <div style="font-size: 12px; color: #6b7280;">Next Scan</div>
+            <div style="font-size: 20px; font-weight: bold; color: #d97706;">{next_text}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
 # Sidebar with Strategy Performance
 st.sidebar.header("🎯 Strategy Performance")
 for strategy, config in TRADING_STRATEGIES.items():
@@ -1658,7 +1691,7 @@ with tabs[0]:
     else:
         st.info("No strategy performance data available yet.")
 
-    with tabs[1]:
+with tabs[1]:
     st.session_state.current_tab = "🚦 Signals"
     st.subheader("Multi-Strategy BUY/SELL Signals")
     col1, col2 = st.columns([1, 2])
@@ -1761,27 +1794,6 @@ with tabs[0]:
             can_trade = trader.can_auto_trade()
             status_color = "🟢" if can_trade else "🔴"
             st.write(f"**Can Auto-Trade:** {status_color} {'YES' if can_trade else 'NO'}")
-            
-            st.subheader("Manual Execution")
-            for s in signals:
-                col_a, col_b, col_c = st.columns([3,1,1])
-                with col_a:
-                    action_color = "🟢" if s["action"] == "BUY" else "🔴"
-                    st.write(f"{action_color} **{s['symbol'].replace('-USD','')}** - {s['action']} @ ${s['entry']:.2f} | Strategy: {s['strategy_name']} | Historical Win: {s.get('historical_accuracy',0.7):.1%} | R:R: {s['risk_reward']:.2f}")
-                with col_b:
-                    qty = int((trader.cash * TRADE_ALLOC) / s["entry"])
-                    st.write(f"Qty: {qty}")
-                with col_c:
-                    if st.button(f"Execute", key=f"exec_{s['symbol']}_{s['strategy']}"):
-                        success, msg = trader.execute_trade(
-                            symbol=s["symbol"], action=s["action"], quantity=qty, price=s["entry"],
-                            stop_loss=s["stop_loss"], target=s["target"], win_probability=s.get("win_probability",0.75),
-                            strategy=s.get("strategy")
-                        )
-                        if success:
-                            st.success(msg)
-        else:
-            st.info("No confirmed signals with current filters.")
 
 with tabs[2]:
     st.session_state.current_tab = "💰 Paper Trading"
@@ -2185,5 +2197,3 @@ with tabs[7]:
 
 st.markdown("---")
 st.markdown("<div style='text-align:center; color: #6b7280;'>Enhanced Crypto Terminal Pro with BUY/SELL Signals & Market Analysis</div>", unsafe_allow_html=True)
-
-
