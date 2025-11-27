@@ -828,28 +828,15 @@ class MultiStrategyCryptoTrader:
             htf_trend = int(data["HTF_Trend"].iloc[-1]) if "HTF_Trend" in data.columns else 1
 
             # Strategy checks (same as original, filtered by historical accuracy >= 65%)
-          # EMA_VWAP_Confluence
-if (ema8 > ema21 > ema50 and live > vwap and adx_val > 20 and htf_trend == 1):
-    action = "BUY"
-    confidence = 0.82
-    score = 9
-    strategy = "EMA_VWAP_Confluence"
+            # EMA_VWAP_Confluence
+            if (ema8 > ema21 > ema50 and live > vwap and adx_val > 20 and htf_trend == 1):
+                action = "BUY"; confidence = 0.82; score = 9; strategy = "EMA_VWAP_Confluence"
+                target, stop_loss = self.calculate_intraday_target_sl(
+                    entry_price=live,
+                    action=action,
+                    atr=atr,
+                    current_price=live,
+                    support=support,
+                    resistance=resistance
+                )
 
-    target, stop_loss = self.calculate_intraday_target_sl(
-        entry_price=live,
-        action=action,
-        atr=atr,
-        current_price=live,
-        support=support,
-        resistance=resistance
-    )
-
-    signals.append({
-        "strategy": strategy,
-        "action": action,
-        "confidence": confidence,
-        "score": score,
-        "entry_price": live,
-        "target": target,
-        "stop_loss": stop_loss
-    })
