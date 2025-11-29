@@ -588,7 +588,21 @@ class RealTimePriceFetcher:
                             price = data[crypto_symbol.lower()]['usd']
             except:
                 pass
-        
+        import yfinance as yf
+
+# Get real-time prices
+btc_ticker = yf.Ticker("BTC-USD")
+eth_ticker = yf.Ticker("ETH-USD")
+sol_ticker = yf.Ticker("SOL-USD")
+
+btc_price = btc_ticker.history(period='1d')['Close'].iloc[-1]
+eth_price = eth_ticker.history(period='1d')['Close'].iloc[-1]
+sol_price = sol_ticker.history(period='1d')['Close'].iloc[-1]
+
+# Update the prices in the original content
+updated_content = original_content.replace("45,000.00", f"{btc_price:,.2f}")
+updated_content = updated_content.replace("52,500.00", f"{eth_price:,.2f}")
+updated_content = updated_content.replace("$100.00", f"${sol_price:,.2f}")
         # If still no price, use fallback
         if price is None:
             fallback_prices = {
@@ -2175,3 +2189,4 @@ max_scan = max_scan_map[scan_limit]
 
 st.markdown("---")
 st.markdown("<div style='text-align:center; color: #6b7280;'>Enhanced Crypto Terminal Pro with High Accuracy Signals & Real-Time Analysis</div>", unsafe_allow_html=True)
+
