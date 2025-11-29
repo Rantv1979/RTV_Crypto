@@ -46,10 +46,10 @@ TRADING_STRATEGIES = {
     "Trend_Reversal": {"name": "Trend Reversal", "weight": 2, "type": "SELL"}
 }
 
-# FIXED CSS with Light Yellowish Background and Better Tabs
+# FIXED CSS with Light Greenish Background, Better Tabs, and RANTV Animation
 st.markdown("""
 <style>
-    /* Light Yellowish Background */
+    /* Light Greenish Background */
     .stApp {
         background: linear-gradient(135deg, #fff9e6 0%, #fff0d6 100%);
     }
@@ -86,7 +86,7 @@ st.markdown("""
     
     .stTabs [aria-selected="true"] {
         background: linear-gradient(135deg, #1e3a8a 0%, #3730a3 100%);
-        color: white;
+        color: Light Blue;
         border: 2px solid #2563eb;
         box-shadow: 0 4px 8px rgba(30, 58, 138, 0.3);
         transform: translateY(-2px);
@@ -96,6 +96,74 @@ st.markdown("""
         background: linear-gradient(135deg, #dbeafe 0%, #e0f2fe 100%);
         border: 2px solid #93c5fd;
         transform: translateY(-1px);
+    }
+    
+    /* RANTV Logo Animation */
+    .rantv-logo {
+        font-family: 'Arial Black', sans-serif;
+        font-size: 42px;
+        font-weight: 900;
+        background: linear-gradient(45deg, #FF0000, #FF4500, #FFD700, #32CD32, #1E90FF, #8A2BE2);
+        background-size: 400% 400%;
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        animation: flameAnimation 3s ease-in-out infinite, floatAnimation 4s ease-in-out infinite;
+        text-shadow: 0 0 20px rgba(255, 69, 0, 0.5);
+        text-align: center;
+        margin-bottom: 10px;
+    }
+    
+    @keyframes flameAnimation {
+        0% { background-position: 0% 50%; }
+        50% { background-position: 100% 50%; }
+        100% { background-position: 0% 50%; }
+    }
+    
+    @keyframes floatAnimation {
+        0%, 100% { transform: translateY(0px); }
+        50% { transform: translateY(-5px); }
+    }
+    
+    /* Trading Graph Animation */
+    .trading-graph {
+        width: 100%;
+        height: 80px;
+        background: linear-gradient(90deg, #1e3a8a 0%, #3730a3 100%);
+        border-radius: 10px;
+        position: relative;
+        overflow: hidden;
+        margin: 10px 0;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+    }
+    
+    .graph-line {
+        position: absolute;
+        bottom: 0;
+        width: 100%;
+        height: 2px;
+        background: linear-gradient(90deg, transparent 0%, #00ff88 50%, transparent 100%);
+        animation: graphMove 2s linear infinite;
+    }
+    
+    .graph-candle {
+        position: absolute;
+        width: 4px;
+        background: linear-gradient(180deg, #00ff88 0%, #0066ff 100%);
+        border-radius: 2px;
+        animation: candleFlicker 1.5s ease-in-out infinite;
+    }
+    
+    @keyframes graphMove {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(100%); }
+    }
+    
+    @keyframes candleFlicker {
+        0%, 100% { opacity: 0.7; height: 20px; }
+        25% { opacity: 1; height: 35px; }
+        50% { opacity: 0.8; height: 25px; }
+        75% { opacity: 0.9; height: 40px; }
     }
     
     /* FIXED Market Mood Gauge Styles - Circular */
@@ -411,6 +479,26 @@ def create_circular_market_mood_gauge(crypto_name, current_value, change_percent
     </div>
     """
     return gauge_html
+
+# Create RANTV Logo with Trading Graph Animation
+def create_rantv_header():
+    """Create animated RANTV logo with trading graph"""
+    header_html = """
+    <div style="text-align: center; margin-bottom: 20px;">
+        <div class="rantv-logo">RANTV</div>
+        <div style="font-size: 16px; color: #6b7280; margin-bottom: 15px;">Crypto Trading Signals & Market Analysis</div>
+        <div class="trading-graph">
+            <div class="graph-line"></div>
+            <div class="graph-candle" style="left: 10%; animation-delay: 0s;"></div>
+            <div class="graph-candle" style="left: 25%; animation-delay: 0.2s;"></div>
+            <div class="graph-candle" style="left: 40%; animation-delay: 0.4s;"></div>
+            <div class="graph-candle" style="left: 55%; animation-delay: 0.6s;"></div>
+            <div class="graph-candle" style="left: 70%; animation-delay: 0.8s;"></div>
+            <div class="graph-candle" style="left: 85%; animation-delay: 1s;"></div>
+        </div>
+    </div>
+    """
+    return header_html
 
 # Enhanced Data Manager with 15min RSI Focus
 class EnhancedDataManager:
@@ -1452,8 +1540,8 @@ if "current_tab" not in st.session_state:
 
 st.session_state.refresh_count += 1
 
-# Enhanced UI with Circular Market Mood Gauges
-st.markdown("<h1 style='text-align:center; color: #1e3a8a;'>Rantv Crypto Terminal Pro BUY/SELL Signals</h1>", unsafe_allow_html=True)
+# Enhanced UI with RANTV Logo and Circular Market Mood Gauges
+st.markdown(create_rantv_header(), unsafe_allow_html=True)
 st_autorefresh(interval=PRICE_REFRESH_MS, key="price_refresh_improved")
 
 cols = st.columns(7)
