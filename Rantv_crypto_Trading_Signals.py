@@ -604,7 +604,7 @@ updated_content = original_content.replace("45,000.00", f"{btc_price:,.2f}")
 updated_content = updated_content.replace("52,500.00", f"{eth_price:,.2f}")
 updated_content = updated_content.replace("$100.00", f"${sol_price:,.2f}")
         # If still no price, use fallback
-                   fallback_prices = {
+                  
                 "BTC-USD": 45000, "ETH-USD": 2500, "SOL-USD": 100, 
                 "XRP-USD": 0.60, "LTC-USD": 70, "GC=F": 1950,
                 "AAPL": 180, "TSLA": 200, "NVDA": 450, "MSFT": 330,
@@ -2188,5 +2188,6 @@ max_scan = max_scan_map[scan_limit]
 
 st.markdown("---")
 st.markdown("<div style='text-align:center; color: #6b7280;'>Enhanced Crypto Terminal Pro with High Accuracy Signals & Real-Time Analysis</div>", unsafe_allow_html=True)
+
 
 
