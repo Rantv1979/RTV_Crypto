@@ -12,7 +12,7 @@ from streamlit_autorefresh import st_autorefresh
 import requests
 
 # Configuration
-st.set_page_config(page_title="Rantv Crypto Terminal Pro - Enhanced", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Rantv Multi-Asset Terminal Pro", layout="wide", initial_sidebar_state="expanded")
 UTC_TZ = pytz.timezone("UTC")
 
 CAPITAL = 2_000_0.0
@@ -24,7 +24,7 @@ MAX_AUTO_TRADES = 10
 SIGNAL_REFRESH_MS = 60000  # 60 seconds for signals
 PRICE_REFRESH_MS = 30000   # 30 seconds for price refresh
 
-MARKET_OPTIONS = ["CRYPTO"]
+MARKET_OPTIONS = ["CRYPTO", "STOCKS", "FOREX"]
 
 # Enhanced Cryptocurrencies with Gold
 CRYPTO_SYMBOLS = [
@@ -34,11 +34,19 @@ CRYPTO_SYMBOLS = [
     "GC=F"  # Gold added
 ]
 
-# Trending Stocks for Dashboard
-TRENDING_STOCKS = [
-    "AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", 
-    "AMZN", "META", "AMD", "NFLX", "SPY"
+# Major US Stocks with High Liquidity (10 stocks)
+MAJOR_STOCKS = [
+    "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA",
+    "NVDA", "META", "BRK-B", "JPM", "JNJ"
 ]
+
+# Major Forex Pairs (5 pairs)
+FOREX_PAIRS = [
+    "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCHF=X", "AUDUSD=X"
+]
+
+# All symbols combined for scanning
+ALL_SYMBOLS = CRYPTO_SYMBOLS + MAJOR_STOCKS + FOREX_PAIRS
 
 # Enhanced Trading Strategies with Better Balance
 TRADING_STRATEGIES = {
@@ -66,12 +74,12 @@ HIGH_ACCURACY_STRATEGIES = {
 # Combine all strategies
 ALL_STRATEGIES = {**TRADING_STRATEGIES, **HIGH_ACCURACY_STRATEGIES}
 
-# FIXED CSS with Light Yellowish Background, Better Tabs, and RANTV Animation
+# UPDATED CSS with Light Greenish Background and Multi-color Tabs
 st.markdown("""
 <style>
     /* Light Green Background */
     .stApp {
-        background: linear-gradient(135deg, #fff9e6 0%, #fff0d6 100%);
+        background: linear-gradient(135deg, #f0fff4 0%, #e6fffa 100%);
     }
     
     /* Main container background */
@@ -80,10 +88,10 @@ st.markdown("""
         padding-top: 2rem;
     }
     
-    /* Enhanced Tabs with Multiple Colors */
+    /* Enhanced Multi-color Tabs */
     .stTabs [data-baseweb="tab-list"] {
         gap: 4px;
-        background: linear-gradient(135deg, #e6f2ff 0%, #ffe6e6 50%, #e6ffe6 100%);
+        background: linear-gradient(135deg, #d1fae5 0%, #dbeafe 25%, #fef3c7 50%, #fce7f3 75%, #fef3c7 100%);
         padding: 8px;
         border-radius: 12px;
         margin-bottom: 1rem;
@@ -105,16 +113,16 @@ st.markdown("""
     }
     
     .stTabs [aria-selected="true"] {
-        background: linear-gradient(135deg, #1e3a8a 0%, #3730a3 100%);
+        background: linear-gradient(135deg, #10b981 0%, #059669 100%);
         color: white;
-        border: 2px solid #2563eb;
-        box-shadow: 0 4px 8px rgba(30, 58, 138, 0.3);
+        border: 2px solid #047857;
+        box-shadow: 0 4px 8px rgba(16, 185, 129, 0.3);
         transform: translateY(-2px);
     }
     
     .stTabs [data-baseweb="tab"]:hover {
-        background: linear-gradient(135deg, #dbeafe 0%, #e0f2fe 100%);
-        border: 2px solid #93c5fd;
+        background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%);
+        border: 2px solid #10b981;
         transform: translateY(-1px);
     }
     
@@ -123,13 +131,13 @@ st.markdown("""
         font-family: 'Arial Black', sans-serif;
         font-size: 42px;
         font-weight: 900;
-        background: linear-gradient(45deg, #FF0000, #FF4500, #FFD700, #32CD32, #1E90FF, #8A2BE2);
+        background: linear-gradient(45deg, #059669, #10b981, #34d399, #065f46, #047857);
         background-size: 400% 400%;
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         background-clip: text;
         animation: flameAnimation 3s ease-in-out infinite, floatAnimation 4s ease-in-out infinite;
-        text-shadow: 0 0 20px rgba(255, 69, 0, 0.5);
+        text-shadow: 0 0 20px rgba(16, 185, 129, 0.5);
         text-align: center;
         margin-bottom: 10px;
     }
@@ -149,7 +157,7 @@ st.markdown("""
     .trading-graph {
         width: 100%;
         height: 80px;
-        background: linear-gradient(90deg, #1e3a8a 0%, #3730a3 100%);
+        background: linear-gradient(90deg, #059669 0%, #047857 100%);
         border-radius: 10px;
         position: relative;
         overflow: hidden;
@@ -192,7 +200,7 @@ st.markdown("""
         border-radius: 50%;
         padding: 25px;
         margin: 10px auto;
-        border: 4px solid #e0f2fe;
+        border: 4px solid #d1fae5;
         box-shadow: 0 8px 25px rgba(0,0,0,0.15);
         width: 200px;
         height: 200px;
@@ -208,7 +216,7 @@ st.markdown("""
         font-size: 14px;
         font-weight: bold;
         margin-bottom: 8px;
-        color: #1e3a8a;
+        color: #065f46;
     }
     
     .gauge-value {
@@ -294,13 +302,13 @@ st.markdown("""
         background: white;
         padding: 15px;
         border-radius: 10px;
-        border-left: 4px solid #1e3a8a;
+        border-left: 4px solid #059669;
         box-shadow: 0 2px 8px rgba(0,0,0,0.1);
     }
     
     /* Auto-refresh counter */
     .refresh-counter {
-        background: #1e3a8a;
+        background: #059669;
         color: white;
         padding: 4px 8px;
         border-radius: 12px;
@@ -519,7 +527,7 @@ def create_circular_market_mood_gauge(crypto_name, current_value, change_percent
                 {sentiment_score}%
             </div>
         </div>
-        <div class="gauge-value">${current_value:,.2f}</div>
+        <div class="gauge-value">{current_value}</div>
         <div class="gauge-sentiment {sentiment_color}">{sentiment_text}</div>
         <div style="color: {'#059669' if change_percent >= 0 else '#dc2626'}; font-size: 12px; margin-top: 3px;">
             {change_percent:+.2f}%
@@ -534,7 +542,7 @@ def create_rantv_header():
     header_html = """
     <div style="text-align: center; margin-bottom: 20px;">
         <div class="rantv-logo">RANTV</div>
-        <div style="font-size: 16px; color: #6b7280; margin-bottom: 15px;">Crypto Trading Signals & Market Analysis</div>
+        <div style="font-size: 16px; color: #6b7280; margin-bottom: 15px;">Multi-Asset Trading Signals & Market Analysis</div>
         <div class="trading-graph">
             <div class="graph-line"></div>
             <div class="graph-candle" style="left: 10%; animation-delay: 0s;"></div>
@@ -588,28 +596,16 @@ class RealTimePriceFetcher:
                             price = data[crypto_symbol.lower()]['usd']
             except:
                 pass
-        import yfinance as yf
-
-# Get real-time prices
-btc_ticker = yf.Ticker("BTC-USD")
-eth_ticker = yf.Ticker("ETH-USD")
-sol_ticker = yf.Ticker("SOL-USD")
-
-btc_price = btc_ticker.history(period='1d')['Close'].iloc[-1]
-eth_price = eth_ticker.history(period='1d')['Close'].iloc[-1]
-sol_price = sol_ticker.history(period='1d')['Close'].iloc[-1]
-
-# Update the prices in the original content
-updated_content = original_content.replace("45,000.00", f"{btc_price:,.2f}")
-updated_content = updated_content.replace("52,500.00", f"{eth_price:,.2f}")
-updated_content = updated_content.replace("$100.00", f"${sol_price:,.2f}")
+        
         # If still no price, use fallback
-                  
+        if price is None:
+            fallback_prices = {
                 "BTC-USD": 45000, "ETH-USD": 2500, "SOL-USD": 100, 
                 "XRP-USD": 0.60, "LTC-USD": 70, "GC=F": 1950,
-                "AAPL": 180, "TSLA": 200, "NVDA": 450, "MSFT": 330,
-                "GOOGL": 140, "AMZN": 150, "META": 350, "AMD": 120,
-                "NFLX": 500, "SPY": 450
+                "AAPL": 180, "MSFT": 330, "GOOGL": 140, "AMZN": 150, "TSLA": 200,
+                "NVDA": 450, "META": 350, "BRK-B": 360, "JPM": 170, "JNJ": 155,
+                "EURUSD=X": 1.08, "GBPUSD=X": 1.26, "USDJPY=X": 150.5, 
+                "USDCHF=X": 0.88, "AUDUSD=X": 0.65
             }
             price = fallback_prices.get(symbol, 100)
         
@@ -824,7 +820,7 @@ class EnhancedDataManager:
     def scan_marubozu_patterns(self, symbols=None):
         """Scan multiple symbols for Marubozu patterns"""
         if symbols is None:
-            symbols = CRYPTO_SYMBOLS + TRENDING_STOCKS
+            symbols = ALL_SYMBOLS
         
         all_marubozu = []
         for symbol in symbols:
@@ -1745,8 +1741,14 @@ class MultiStrategyCryptoTrader:
 
     def generate_quality_signals(self, universe, max_scan=None, min_confidence=0.7, min_score=6):
         signals = []
-        if universe == "All Cryptos":
+        if universe == "All Assets":
+            symbols = ALL_SYMBOLS
+        elif universe == "Cryptos Only":
             symbols = CRYPTO_SYMBOLS
+        elif universe == "Stocks Only":
+            symbols = MAJOR_STOCKS
+        elif universe == "Forex Only":
+            symbols = FOREX_PAIRS
         else:
             symbols = CRYPTO_SYMBOLS[:10]  # Major cryptos + Gold
         
@@ -1881,10 +1883,10 @@ except Exception:
     col6.metric("NVDA", "N/A")
 
 try:
-    tsla_price = data_manager._validate_live_price("TSLA")
-    col7.metric("TSLA", f"${tsla_price:,.2f}")
+    eurusd_price = data_manager._validate_live_price("EURUSD=X")
+    col7.metric("EUR/USD", f"{eurusd_price:.4f}")
 except Exception:
-    col7.metric("TSLA", "N/A")
+    col7.metric("EUR/USD", "N/A")
 
 # Manual refresh button instead of auto-refresh to prevent tab switching
 col1, col2, col3 = st.columns([2, 1, 1])
@@ -1897,36 +1899,67 @@ with col3:
     if st.button("📊 Update Prices", use_container_width=True):
         st.rerun()
 
-# Market Mood Gauges for Major Assets
+# Market Mood Gauges for Major Assets with Real-time Prices
 st.subheader("📊 Market Mood Gauges")
 
-# Calculate sentiment for major assets
-assets = [
-    ("BTC-USD", "BITCOIN", 45000),
-    ("ETH-USD", "ETHEREUM", 2500),
-    ("SOL-USD", "SOLANA", 100),
-    ("GC=F", "GOLD", 1950)
-]
+# Calculate sentiment for major assets with real-time prices
+assets = []
+crypto_symbols = ["BTC-USD", "ETH-USD", "SOL-USD", "GC=F"]
+crypto_names = ["BITCOIN", "ETHEREUM", "SOLANA", "GOLD"]
+
+for symbol, name in zip(crypto_symbols, crypto_names):
+    try:
+        # Get real-time price using yfinance
+        ticker = yf.Ticker(symbol)
+        data = ticker.history(period='1d', interval='1m')
+        if not data.empty:
+            current_price = float(data['Close'].iloc[-1])
+            # Get previous price for change calculation
+            if len(data) > 1:
+                prev_price = float(data['Close'].iloc[-2])
+                change_pct = ((current_price - prev_price) / prev_price) * 100
+            else:
+                change_pct = 0.0
+            
+            # Calculate sentiment based on price movement and RSI
+            try:
+                stock_data = data_manager.get_stock_data(symbol, "15m")
+                rsi_val = float(stock_data["RSI14"].iloc[-1]) if stock_data is not None and len(stock_data) > 0 else 50
+            except:
+                rsi_val = 50
+            
+            # Enhanced sentiment calculation
+            price_sentiment = 50 + (change_pct * 2)  # Price momentum
+            rsi_sentiment = 50 + (rsi_val - 50) * 0.5  # RSI influence
+            sentiment_score = (price_sentiment + rsi_sentiment) / 2
+            sentiment_score = max(0, min(100, sentiment_score))
+            
+            assets.append((symbol, name, current_price, change_pct, sentiment_score))
+        else:
+            # Fallback if yfinance fails
+            fallback_prices = {"BTC-USD": 45000, "ETH-USD": 2500, "SOL-USD": 100, "GC=F": 1950}
+            current_price = fallback_prices.get(symbol, 100)
+            assets.append((symbol, name, current_price, 0.15, 65))
+    except Exception as e:
+        # Fallback if there's any error
+        fallback_prices = {"BTC-USD": 45000, "ETH-USD": 2500, "SOL-USD": 100, "GC=F": 1950}
+        current_price = fallback_prices.get(symbol, 100)
+        assets.append((symbol, name, current_price, 0.15, 65))
 
 cols = st.columns(4)
-for idx, (symbol, name, fallback) in enumerate(assets):
-    try:
-        data = data_manager.get_stock_data(symbol, "5m")
-        current = float(data["Close"].iloc[-1])
-        prev = float(data["Close"].iloc[-2])
-        change = ((current - prev) / prev) * 100
-        
-        # Calculate sentiment score
-        sentiment = 50 + (change * 8)
-        sentiment = max(0, min(100, round(sentiment)))
-        
-    except Exception:
-        current = fallback
-        change = 0.15 if name in ["BITCOIN", "ETHEREUM", "SOLANA"] else 0.05
-        sentiment = 65 if name in ["BITCOIN", "ETHEREUM", "SOLANA"] else 55
-    
+for idx, (symbol, name, current_price, change_pct, sentiment) in enumerate(assets):
     with cols[idx]:
-        st.markdown(create_circular_market_mood_gauge(name, current, change, sentiment), unsafe_allow_html=True)
+        # Format price display based on asset type
+        if name == "GOLD":
+            price_display = f"${current_price:,.0f}"
+        elif current_price > 1000:
+            price_display = f"${current_price:,.0f}"
+        elif current_price > 1:
+            price_display = f"${current_price:,.2f}"
+        else:
+            price_display = f"${current_price:.4f}"
+            
+        st.markdown(create_circular_market_mood_gauge(name, price_display, change_pct, sentiment), unsafe_allow_html=True)
 
 # Marubozu Candle Scanner
 st.subheader("🎯 15-Minute Marubozu Trend Confirmation Signals")
@@ -1966,21 +1999,21 @@ with cols[0]:
     st.markdown(f"""
     <div class="metric-card">
         <div style="font-size: 12px; color: #6b7280;">Available Cash</div>
-        <div style="font-size: 20px; font-weight: bold; color: #1e3a8a;">${trader.cash:,.0f}</div>
+        <div style="font-size: 20px; font-weight: bold; color: #059669;">${trader.cash:,.0f}</div>
     </div>
     """, unsafe_allow_html=True)
 with cols[1]:
     st.markdown(f"""
     <div class="metric-card">
         <div style="font-size: 12px; color: #6b7280;">Account Value</div>
-        <div style="font-size: 20px; font-weight; bold; color: #1e3a8a;">${trader.equity():,.0f}</div>
+        <div style="font-size: 20px; font-weight; bold; color: #059669;">${trader.equity():,.0f}</div>
     </div>
     """, unsafe_allow_html=True)
 with cols[2]:
     st.markdown(f"""
     <div class="metric-card">
         <div style="font-size: 12px; color: #6b7280;">Open Positions</div>
-        <div style="font-size: 20px; font-weight: bold; color: #1e3a8a;">{len(trader.positions)}</div>
+        <div style="font-size: 20px; font-weight: bold; color: #059669;">{len(trader.positions)}</div>
     </div>
     """, unsafe_allow_html=True)
 with cols[3]:
@@ -1993,10 +2026,7 @@ with cols[3]:
     </div>
     """, unsafe_allow_html=True)
 
-# Continue with the rest of the dashboard code (tabs, sidebar, etc.)
-# ... [The rest of your existing tab structure remains the same]
-
-# Enhanced Tabs with Trade History - Using session state to remember current tab
+# Enhanced Tabs with Multi-color Theme
 tabs = st.tabs([
     "📈 Dashboard", 
     "🚦 High Accuracy Signals", 
@@ -2056,7 +2086,7 @@ with tabs[1]:
     
     col1, col2 = st.columns([1, 2])
     with col1:
-        universe = st.selectbox("Universe", ["All Cryptos", "Major Cryptos"], key="signals_universe")
+        universe = st.selectbox("Universe", ["All Assets", "Cryptos Only", "Stocks Only", "Forex Only"], key="signals_universe")
         generate_btn = st.button("Generate High Accuracy Signals", type="primary", use_container_width=True)
     with col2:
         if trader.auto_execution:
@@ -2093,12 +2123,12 @@ with tabs[1]:
             for s in signals:
                 high_acc_badge = " 🏆" if s.get("high_accuracy", False) else ""
                 data_rows.append({
-                    "Symbol": s["symbol"].replace("-USD","") + high_acc_badge,
+                    "Symbol": s["symbol"].replace("-USD","").replace("=X","") + high_acc_badge,
                     "Action": s["action"],
                     "Strategy": s["strategy_name"],
-                    "Entry Price": f"${s['entry']:.2f}",
-                    "Target": f"${s['target']:.2f}",
-                    "Stop Loss": f"${s['stop_loss']:.2f}",
+                    "Entry Price": f"${s['entry']:.2f}" if s['entry'] > 1 else f"{s['entry']:.4f}",
+                    "Target": f"${s['target']:.2f}" if s['target'] > 1 else f"{s['target']:.4f}",
+                    "Stop Loss": f"${s['stop_loss']:.2f}" if s['stop_loss'] > 1 else f"{s['stop_loss']:.4f}",
                     "Confidence": f"{s['confidence']:.1%}",
                     "Historical Win %": f"{s.get('historical_accuracy', 0.7):.1%}",
                     "R:R": f"{s['risk_reward']:.2f}",
@@ -2126,7 +2156,7 @@ with tabs[1]:
                 with col_a:
                     action_color = "🟢" if s["action"] == "BUY" else "🔴"
                     high_acc_indicator = " 🏆 HIGH ACCURACY" if s.get("high_accuracy", False) else ""
-                    st.write(f"{action_color} **{s['symbol'].replace('-USD','')}** - {s['action']} @ ${s['entry']:.2f}{high_acc_indicator}")
+                    st.write(f"{action_color} **{s['symbol'].replace('-USD','').replace('=X','')}** - {s['action']} @ ${s['entry']:.2f}{high_acc_indicator}")
                     st.write(f"Strategy: {s['strategy_name']} | Historical Win: {s.get('historical_accuracy',0.7):.1%} | R:R: {s['risk_reward']:.2f}")
                 with col_b:
                     qty = int((trader.cash * TRADE_ALLOC) / s["entry"])
@@ -2158,7 +2188,7 @@ with tabs[1]:
             status_color = "🟢" if can_trade else "🔴"
             st.write(f"**Can Auto-Trade:** {status_color} {'YES' if can_trade else 'NO'}")
 
-# ... [Rest of the tabs remain similar but updated with new functionality]
+# Continue with other tabs (they remain similar but will now include all asset classes)
 
 st.sidebar.header("🎯 Strategy Performance")
 for strategy, config in ALL_STRATEGIES.items():
@@ -2182,12 +2212,9 @@ trader.selected_market = st.sidebar.selectbox("Market Type", MARKET_OPTIONS)
 trader.auto_execution = st.sidebar.checkbox("Auto Execution", value=False)
 min_conf_percent = st.sidebar.slider("Minimum Confidence %", 70, 95, 75, 5)
 min_score = st.sidebar.slider("Minimum Score", 6, 10, 7, 1)
-scan_limit = st.sidebar.selectbox("Scan Limit", ["All Cryptos", "Top 10", "Top 5"], index=0)
-max_scan_map = {"All Cryptos": None, "Top 10": 10, "Top 5": 5}
+scan_limit = st.sidebar.selectbox("Scan Limit", ["All Assets", "Top 10", "Top 5"], index=0)
+max_scan_map = {"All Assets": None, "Top 10": 10, "Top 5": 5}
 max_scan = max_scan_map[scan_limit]
 
 st.markdown("---")
-st.markdown("<div style='text-align:center; color: #6b7280;'>Enhanced Crypto Terminal Pro with High Accuracy Signals & Real-Time Analysis</div>", unsafe_allow_html=True)
-
-
-
+st.markdown("<div style='text-align:center; color: #6b7280;'>Multi-Asset Trading Terminal Pro with High Accuracy Signals & Real-Time Analysis</div>", unsafe_allow_html=True)
