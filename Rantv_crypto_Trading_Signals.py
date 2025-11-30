@@ -248,12 +248,12 @@ st.markdown("""
         background-color: #fef3c7;
     }
     
-    /* Circular Progress Bar */
+    /* FIXED Circular Progress Bar */
     .gauge-progress {
         width: 100px;
         height: 100px;
         border-radius: 50%;
-        background: conic-gradient(#059669 0% var(--progress), #e5e7eb var(--progress) 100%);
+        background: conic-gradient(#059669 0% var(--progress, 50%), #e5e7eb var(--progress, 50%) 100%);
         display: flex;
         align-items: center;
         justify-content: center;
@@ -271,17 +271,24 @@ st.markdown("""
         justify-content: center;
         font-weight: bold;
         font-size: 14px;
+        color: #1f2937;
     }
     
     /* RSI Scanner Styles */
     .rsi-oversold { 
         background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%);
         border-left: 4px solid #059669;
+        padding: 10px;
+        margin: 5px 0;
+        border-radius: 8px;
     }
     
     .rsi-overbought { 
         background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
         border-left: 4px solid #dc2626;
+        padding: 10px;
+        margin: 5px 0;
+        border-radius: 8px;
     }
     
     /* Market Profile Styles */
@@ -493,48 +500,76 @@ def adx(high, low, close, period=14):
     df["adx"] = df["dx"].rolling(window=period).mean().fillna(0)
     return df["adx"].values
 
-# FIXED Circular Market Mood Gauge Component with Rounded Percentages
-def create_circular_market_mood_gauge(crypto_name, current_value, change_percent, sentiment_score):
-    """Create a circular market mood gauge for Cryptocurrencies"""
-    
-    # Round sentiment score and change percentage
-    sentiment_score = round(sentiment_score)
-    change_percent = round(change_percent, 2)
-    
-    # Determine sentiment color and text
-    if sentiment_score >= 70:
-        sentiment_color = "bullish"
-        sentiment_text = "BULLISH"
-        emoji = "📈"
-        progress_color = "#059669"
-    elif sentiment_score <= 30:
-        sentiment_color = "bearish"
-        sentiment_text = "BEARISH"
-        emoji = "📉"
-        progress_color = "#dc2626"
-    else:
-        sentiment_color = "neutral"
-        sentiment_text = "NEUTRAL"
-        emoji = "➡️"
-        progress_color = "#d97706"
-    
-    # Create circular gauge HTML
-    gauge_html = f"""
+# FIXED Circular Market Mood Gauge Component with Real Data
+def create_working_market_mood_gauge(symbol, name):
+    """Working market mood gauge with real data"""
+    try:
+        # Get real data
+        data = data_manager.get_stock_data(symbol, "15m")
+        if data is None or len(data) < 10:
+            return create_fallback_gauge(name)
+        
+        current_price = float(data["Close"].iloc[-1])
+        rsi_val = float(data["RSI14"].iloc[-1])
+        
+        # Calculate sentiment score (0-100)
+        if rsi_val < 30:
+            sentiment_score = 20  # Oversold - Bearish
+        elif rsi_val > 70:
+            sentiment_score = 80  # Overbought - Bullish  
+        else:
+            # Base sentiment on RSI position
+            sentiment_score = (rsi_val - 30) / (70 - 30) * 60 + 20
+        
+        # Determine sentiment
+        if sentiment_score >= 60:
+            sentiment = "BULLISH"
+            color_class = "bullish"
+            emoji = "📈"
+        elif sentiment_score <= 40:
+            sentiment = "BEARISH" 
+            color_class = "bearish"
+            emoji = "📉"
+        else:
+            sentiment = "NEUTRAL"
+            color_class = "neutral"
+            emoji = "➡️"
+        
+        # Format price display
+        if current_price > 1000:
+            price_display = f"${current_price:,.0f}"
+        else:
+            price_display = f"${current_price:.2f}"
+        
+        return f"""
+        <div class="gauge-container">
+            <div class="gauge-title">{emoji} {name}</div>
+            <div class="gauge-progress" style="--progress: {sentiment_score}%">
+                <div class="gauge-progress-inner">
+                    {int(sentiment_score)}%
+                </div>
+            </div>
+            <div class="gauge-value">{price_display}</div>
+            <div class="gauge-sentiment {color_class}">{sentiment}</div>
+        </div>
+        """
+    except Exception as e:
+        return create_fallback_gauge(name)
+
+def create_fallback_gauge(name):
+    """Fallback gauge when data fails"""
+    return f"""
     <div class="gauge-container">
-        <div class="gauge-title">{emoji} {crypto_name}</div>
-        <div class="gauge-progress" style="--progress: {sentiment_score}%; background: conic-gradient({progress_color} 0% {sentiment_score}%, #e5e7eb {sentiment_score}% 100%);">
+        <div class="gauge-title">⚠️ {name}</div>
+        <div class="gauge-progress" style="--progress: 50%">
             <div class="gauge-progress-inner">
-                {sentiment_score}%
+                50%
             </div>
         </div>
-        <div class="gauge-value">{current_value}</div>
-        <div class="gauge-sentiment {sentiment_color}">{sentiment_text}</div>
-        <div style="color: {'#059669' if change_percent >= 0 else '#dc2626'}; font-size: 12px; margin-top: 3px;">
-            {change_percent:+.2f}%
-        </div>
+        <div class="gauge-value">N/A</div>
+        <div class="gauge-sentiment neutral">UNAVAILABLE</div>
     </div>
     """
-    return gauge_html
 
 # Create RANTV Logo with Trading Graph Animation
 def create_rantv_header():
@@ -556,6 +591,28 @@ def create_rantv_header():
     """
     return header_html
 
+# Enhanced Gold Price Fetcher
+def get_enhanced_gold_price():
+    """Get gold price from multiple sources"""
+    sources = [
+        # Yahoo Finance
+        lambda: yf.Ticker("GC=F").history(period='1d').iloc[-1]['Close'],
+        # Alternative source 1
+        lambda: yf.Ticker("GLD").history(period='1d').iloc[-1]['Close'] * 10,  # Approximate conversion
+        # Alternative source 2  
+        lambda: yf.Ticker("IAU").history(period='1d').iloc[-1]['Close'] * 100,  # Approximate conversion
+    ]
+    
+    for source in sources:
+        try:
+            price = source()
+            if price and price > 1000:  # Basic validation
+                return float(price)
+        except:
+            continue
+    
+    return 1950.0  # Fallback
+
 # Real-time Price Fetcher with Multiple Sources
 class RealTimePriceFetcher:
     def __init__(self):
@@ -573,14 +630,18 @@ class RealTimePriceFetcher:
         
         price = None
         
-        # Try Yahoo Finance first
-        try:
-            ticker = yf.Ticker(symbol)
-            data = ticker.history(period='1d', interval='1m')
-            if not data.empty:
-                price = float(data['Close'].iloc[-1])
-        except:
-            pass
+        # Special handling for gold
+        if symbol == "GC=F":
+            price = get_enhanced_gold_price()
+        else:
+            # Try Yahoo Finance first
+            try:
+                ticker = yf.Ticker(symbol)
+                data = ticker.history(period='1d', interval='1m')
+                if not data.empty:
+                    price = float(data['Close'].iloc[-1])
+            except:
+                pass
         
         # If Yahoo fails, try alternative methods
         if price is None:
@@ -1907,59 +1968,10 @@ assets = []
 crypto_symbols = ["BTC-USD", "ETH-USD", "SOL-USD", "GC=F"]
 crypto_names = ["BITCOIN", "ETHEREUM", "SOLANA", "GOLD"]
 
-for symbol, name in zip(crypto_symbols, crypto_names):
-    try:
-        # Get real-time price using yfinance
-        ticker = yf.Ticker(symbol)
-        data = ticker.history(period='1d', interval='1m')
-        if not data.empty:
-            current_price = float(data['Close'].iloc[-1])
-            # Get previous price for change calculation
-            if len(data) > 1:
-                prev_price = float(data['Close'].iloc[-2])
-                change_pct = ((current_price - prev_price) / prev_price) * 100
-            else:
-                change_pct = 0.0
-            
-            # Calculate sentiment based on price movement and RSI
-            try:
-                stock_data = data_manager.get_stock_data(symbol, "15m")
-                rsi_val = float(stock_data["RSI14"].iloc[-1]) if stock_data is not None and len(stock_data) > 0 else 50
-            except:
-                rsi_val = 50
-            
-            # Enhanced sentiment calculation
-            price_sentiment = 50 + (change_pct * 2)  # Price momentum
-            rsi_sentiment = 50 + (rsi_val - 50) * 0.5  # RSI influence
-            sentiment_score = (price_sentiment + rsi_sentiment) / 2
-            sentiment_score = max(0, min(100, sentiment_score))
-            
-            assets.append((symbol, name, current_price, change_pct, sentiment_score))
-        else:
-            # Fallback if yfinance fails
-            fallback_prices = {"BTC-USD": 45000, "ETH-USD": 2500, "SOL-USD": 100, "GC=F": 1950}
-            current_price = fallback_prices.get(symbol, 100)
-            assets.append((symbol, name, current_price, 0.15, 65))
-    except Exception as e:
-        # Fallback if there's any error
-        fallback_prices = {"BTC-USD": 45000, "ETH-USD": 2500, "SOL-USD": 100, "GC=F": 1950}
-        current_price = fallback_prices.get(symbol, 100)
-        assets.append((symbol, name, current_price, 0.15, 65))
-
 cols = st.columns(4)
-for idx, (symbol, name, current_price, change_pct, sentiment) in enumerate(assets):
+for idx, (symbol, name) in enumerate(zip(crypto_symbols, crypto_names)):
     with cols[idx]:
-        # Format price display based on asset type
-        if name == "GOLD":
-            price_display = f"${current_price:,.0f}"
-        elif current_price > 1000:
-            price_display = f"${current_price:,.0f}"
-        elif current_price > 1:
-            price_display = f"${current_price:,.2f}"
-        else:
-            price_display = f"${current_price:.4f}"
-            
-        st.markdown(create_circular_market_mood_gauge(name, price_display, change_pct, sentiment), unsafe_allow_html=True)
+        st.markdown(create_working_market_mood_gauge(symbol, name), unsafe_allow_html=True)
 
 # Marubozu Candle Scanner
 st.subheader("🎯 15-Minute Marubozu Trend Confirmation Signals")
@@ -2188,8 +2200,262 @@ with tabs[1]:
             status_color = "🟢" if can_trade else "🔴"
             st.write(f"**Can Auto-Trade:** {status_color} {'YES' if can_trade else 'NO'}")
 
-# Continue with other tabs (they remain similar but will now include all asset classes)
+with tabs[2]:
+    st.session_state.current_tab = "💰 Paper Trading"
+    st.subheader("💰 Paper Trading Dashboard")
+    
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st.write(f"**Available Capital:** ${trader.cash:,.2f}")
+        st.write(f"**Account Value:** ${trader.equity():,.2f}")
+    with col2:
+        if st.button("Close All Positions", type="secondary"):
+            for symbol in list(trader.positions.keys()):
+                trader.close_position(symbol)
+            st.success("All positions closed!")
+            st.rerun()
+    
+    # Open Positions
+    st.subheader("📊 Open Positions")
+    open_positions = trader.get_open_positions_data()
+    if open_positions:
+        st.dataframe(pd.DataFrame(open_positions), use_container_width=True)
+    else:
+        st.info("No open positions")
+    
+    # Manual Trading
+    st.subheader("🎯 Manual Trade Execution")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        manual_symbol = st.selectbox("Symbol", ALL_SYMBOLS, key="manual_symbol")
+    with col2:
+        manual_action = st.selectbox("Action", ["BUY", "SELL"], key="manual_action")
+    with col3:
+        manual_qty = st.number_input("Quantity", min_value=1, max_value=1000, value=10, key="manual_qty")
+    
+    if st.button("Execute Manual Trade", type="primary"):
+        current_price = data_manager._validate_live_price(manual_symbol)
+        success, msg = trader.execute_trade(
+            symbol=manual_symbol,
+            action=manual_action,
+            quantity=manual_qty,
+            price=current_price,
+            strategy="Manual"
+        )
+        if success:
+            st.success(msg)
+            st.rerun()
+        else:
+            st.error(msg)
 
+with tabs[3]:
+    st.session_state.current_tab = "📋 Trade History"
+    st.subheader("📋 Trade History")
+    
+    trade_history = trader.get_trade_history_data()
+    if trade_history:
+        # Convert to DataFrame for display
+        history_df = pd.DataFrame(trade_history)
+        # Display without the _row_class column
+        display_cols = [col for col in history_df.columns if not col.startswith('_')]
+        st.dataframe(history_df[display_cols], use_container_width=True)
+        
+        # Performance Summary
+        st.subheader("📈 Performance Summary")
+        perf = trader.get_performance_stats()
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Trades", perf["total_trades"])
+        col2.metric("Win Rate", f"{perf['win_rate']:.1%}")
+        col3.metric("Total P&L", f"${perf['total_pnl']:+.2f}")
+        col4.metric("Avg P&L per Trade", f"${perf['avg_pnl']:+.2f}")
+    else:
+        st.info("No trade history available")
+
+with tabs[4]:
+    st.session_state.current_tab = "📊 Market Profile"
+    st.subheader("📊 Market Profile Analysis")
+    
+    profile_symbol = st.selectbox("Select Symbol", ALL_SYMBOLS, key="profile_symbol")
+    
+    if st.button("Generate Market Profile", type="primary"):
+        with st.spinner("Generating market profile..."):
+            data = data_manager.get_stock_data(profile_symbol, "15m")
+            if data is not None and len(data) > 0:
+                current_price = data["Close"].iloc[-1]
+                poc = data["POC"].iloc[-1]
+                va_high = data["VA_High"].iloc[-1]
+                va_low = data["VA_Low"].iloc[-1]
+                support = data["Support"].iloc[-1]
+                resistance = data["Resistance"].iloc[-1]
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Current Price", f"${current_price:.2f}")
+                    st.metric("Point of Control", f"${poc:.2f}")
+                    st.metric("Value Area High", f"${va_high:.2f}")
+                with col2:
+                    st.metric("Value Area Low", f"${va_low:.2f}")
+                    st.metric("Support", f"${support:.2f}")
+                    st.metric("Resistance", f"${resistance:.2f}")
+                
+                # Market Profile Signal
+                profile_signal = data_manager.calculate_market_profile_signals(profile_symbol)
+                st.subheader("🎯 Market Profile Signal")
+                signal_color = "🟢" if profile_signal["signal"] == "BULLISH" else "🔴" if profile_signal["signal"] == "BEARISH" else "🟡"
+                st.write(f"{signal_color} **{profile_signal['signal']}** (Confidence: {profile_signal['confidence']:.1%})")
+                st.write(f"**Reason:** {profile_signal['reason']}")
+            else:
+                st.error("Could not generate market profile data")
+
+with tabs[5]:
+    st.session_state.current_tab = "📉 RSI Extreme"
+    st.subheader("📉 RSI Extreme Scanner")
+    
+    if st.button("Scan RSI Extremes", type="primary"):
+        oversold = []
+        overbought = []
+        
+        for symbol in ALL_SYMBOLS[:15]:  # Scan first 15 for performance
+            try:
+                data = data_manager.get_stock_data(symbol, "15m")
+                if data is not None and len(data) > 14:
+                    rsi_val = data["RSI14"].iloc[-1]
+                    price = data["Close"].iloc[-1]
+                    
+                    if rsi_val < 30:
+                        oversold.append({
+                            "symbol": symbol.replace("-USD", "").replace("=X", ""),
+                            "rsi": round(rsi_val, 1),
+                            "price": price,
+                            "signal": "OVERSOLD"
+                        })
+                    elif rsi_val > 70:
+                        overbought.append({
+                            "symbol": symbol.replace("-USD", "").replace("=X", ""), 
+                            "rsi": round(rsi_val, 1),
+                            "price": price,
+                            "signal": "OVERBOUGHT"
+                        })
+            except:
+                continue
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("🔴 Oversold (RSI < 30)")
+            if oversold:
+                for item in oversold:
+                    st.markdown(f"""
+                    <div class="rsi-oversold">
+                        <strong>{item['symbol']}</strong><br>
+                        RSI: {item['rsi']} | Price: ${item['price']:.2f}
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("No oversold assets found")
+        
+        with col2:
+            st.subheader("🟢 Overbought (RSI > 70)")
+            if overbought:
+                for item in overbought:
+                    st.markdown(f"""
+                    <div class="rsi-overbought">
+                        <strong>{item['symbol']}</strong><br>
+                        RSI: {item['rsi']} | Price: ${item['price']:.2f}
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("No overbought assets found")
+
+with tabs[6]:
+    st.session_state.current_tab = "🔍 Backtest"
+    st.subheader("🔍 Strategy Backtesting")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        symbol = st.selectbox("Select Symbol", ALL_SYMBOLS, key="backtest_symbol")
+        strategy = st.selectbox("Select Strategy", list(ALL_STRATEGIES.keys()), 
+                              format_func=lambda x: ALL_STRATEGIES[x]["name"])
+    with col2:
+        days = st.slider("Lookback Days", 7, 30, 14)
+        run_backtest = st.button("Run Backtest", type="primary")
+    
+    if run_backtest:
+        with st.spinner("Running backtest..."):
+            # Get historical data
+            data = data_manager.get_stock_data(symbol, "15m")
+            if data is not None and len(data) > 50:
+                accuracy = data_manager.get_historical_accuracy(symbol, strategy)
+                
+                # Simulate trades
+                wins = 0
+                total = 0
+                trades = []
+                
+                for i in range(50, len(data)-5):
+                    signal = trader.generate_strategy_signals(symbol, data.iloc[:i+1])
+                    if signal and signal[0]["strategy"] == strategy:
+                        total += 1
+                        entry_price = data.iloc[i]["Close"]
+                        future_prices = data.iloc[i+1:i+6]["Close"]
+                        
+                        if signal[0]["action"] == "BUY":
+                            if future_prices.max() > entry_price * 1.005:  # 0.5% target
+                                wins += 1
+                                trades.append({"type": "WIN", "price": entry_price})
+                            else:
+                                trades.append({"type": "LOSS", "price": entry_price})
+                
+                win_rate = wins / total if total > 0 else 0
+                
+                st.metric("Historical Accuracy", f"{accuracy:.1%}")
+                st.metric("Simulated Win Rate", f"{win_rate:.1%}")
+                st.metric("Total Signals", total)
+                
+            else:
+                st.error("Insufficient data for backtesting")
+
+with tabs[7]:
+    st.session_state.current_tab = "⚡ Strategies"
+    st.subheader("⚡ Trading Strategies Overview")
+    
+    # Display all strategies with their performance
+    strategy_data = []
+    for strategy_id, config in ALL_STRATEGIES.items():
+        perf = trader.strategy_performance.get(strategy_id, {"signals": 0, "trades": 0, "wins": 0, "pnl": 0})
+        win_rate = perf["wins"] / perf["trades"] if perf["trades"] > 0 else 0
+        
+        strategy_data.append({
+            "Strategy": config["name"],
+            "Type": "HIGH ACCURACY" if strategy_id in HIGH_ACCURACY_STRATEGIES else "STANDARD",
+            "Action Type": config["type"],
+            "Weight": config["weight"],
+            "Signals": perf["signals"],
+            "Trades": perf["trades"], 
+            "Win Rate": f"{win_rate:.1%}",
+            "P&L": f"${perf['pnl']:+.2f}"
+        })
+    
+    if strategy_data:
+        st.dataframe(pd.DataFrame(strategy_data), use_container_width=True)
+    
+    # Strategy configuration
+    st.subheader("Strategy Weights Configuration")
+    for strategy_id, config in ALL_STRATEGIES.items():
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.write(f"**{config['name']}**")
+        with col2:
+            new_weight = st.number_input(
+                f"Weight", 
+                min_value=1, 
+                max_value=10, 
+                value=config["weight"],
+                key=f"weight_{strategy_id}"
+            )
+            ALL_STRATEGIES[strategy_id]["weight"] = new_weight
+
+# Sidebar Configuration
 st.sidebar.header("🎯 Strategy Performance")
 for strategy, config in ALL_STRATEGIES.items():
     if strategy in trader.strategy_performance:
