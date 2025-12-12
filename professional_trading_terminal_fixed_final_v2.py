@@ -1,5 +1,6 @@
 """
 Streamlit Trading Bot for Commodities & Cryptocurrencies
+No external TA libraries required - uses yfinance and pandas only
 Supports: USOIL, GOLD, BTC, SOLANA, XRP, ETH
 """
 
@@ -9,31 +10,16 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import yfinance as yf
-import pandas_ta as ta  # Alternative to TA-Lib
 from datetime import datetime, timedelta
 import sqlite3
 import json
 import time
-import threading
-import queue
 import warnings
-import requests
 from typing import Dict, List, Tuple, Optional
 import logging
 import os
 
 warnings.filterwarnings('ignore')
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('trading_bot.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
 
 # Page configuration
 st.set_page_config(
@@ -124,71 +110,84 @@ class DataHandler:
             )
             
             if data.empty:
-                logger.warning(f"No data found for {asset_name} ({symbol})")
+                st.warning(f"No data found for {asset_name} ({symbol})")
                 return pd.DataFrame()
             
-            # Rename columns to match our expected format
-            data = data.rename(columns={
-                'Open': 'open',
-                'High': 'high',
-                'Low': 'low',
-                'Close': 'close',
-                'Volume': 'volume'
-            })
-            
             # Calculate all indicators
-            data = self.calculate_indicators(data, asset_name)
+            data = self.calculate_indicators(data)
             self.data_cache[asset_name] = data
             
             return data
             
         except Exception as e:
-            logger.error(f"Error fetching data for {asset_name}: {str(e)}")
+            st.error(f"Error fetching data for {asset_name}: {str(e)}")
             return pd.DataFrame()
     
-    def calculate_indicators(self, df: pd.DataFrame, asset_name: str) -> pd.DataFrame:
-        """Calculate all technical indicators using pandas_ta"""
+    def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate all technical indicators using pandas only"""
         if df.empty:
             return df
         
-        close = df['close']
-        high = df['high']
-        low = df['low']
-        volume = df['volume']
+        close = df['Close']
+        high = df['High']
+        low = df['Low']
+        volume = df['Volume']
         
-        # Moving Averages
-        df['EMA8'] = ta.ema(close, length=8)
-        df['EMA21'] = ta.ema(close, length=21)
-        df['EMA50'] = ta.ema(close, length=50)
-        df['SMA20'] = ta.sma(close, length=20)
+        # Moving Averages (EMA calculation)
+        df['EMA8'] = close.ewm(span=8, adjust=False).mean()
+        df['EMA21'] = close.ewm(span=21, adjust=False).mean()
+        df['EMA50'] = close.ewm(span=50, adjust=False).mean()
+        df['SMA20'] = close.rolling(window=20).mean()
         
-        # VWAP (daily)
+        # VWAP (Volume Weighted Average Price)
         typical_price = (high + low + close) / 3
-        df['VWAP'] = ta.vwap(high, low, close, volume)
+        vwap_numerator = (typical_price * volume).rolling(window=20).sum()
+        vwap_denominator = volume.rolling(window=20).sum()
+        df['VWAP'] = vwap_numerator / vwap_denominator
         
         # Bollinger Bands
-        bb = ta.bbands(close, length=20, std=2)
-        df['BB_upper'] = bb['BBU_20_2.0']
-        df['BB_middle'] = bb['BBM_20_2.0']
-        df['BB_lower'] = bb['BBL_20_2.0']
+        sma20 = close.rolling(window=20).mean()
+        std20 = close.rolling(window=20).std()
+        df['BB_upper'] = sma20 + (std20 * 2)
+        df['BB_middle'] = sma20
+        df['BB_lower'] = sma20 - (std20 * 2)
         
-        # RSI
-        df['RSI'] = ta.rsi(close, length=14)
+        # RSI Calculation
+        delta = close.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['RSI'] = 100 - (100 / (1 + rs))
         
-        # MACD
-        macd = ta.macd(close, fast=12, slow=26, signal=9)
-        df['MACD'] = macd['MACD_12_26_9']
-        df['MACD_signal'] = macd['MACDs_12_26_9']
-        df['MACD_hist'] = macd['MACDh_12_26_9']
+        # MACD Calculation
+        exp1 = close.ewm(span=12, adjust=False).mean()
+        exp2 = close.ewm(span=26, adjust=False).mean()
+        df['MACD'] = exp1 - exp2
+        df['MACD_signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+        df['MACD_hist'] = df['MACD'] - df['MACD_signal']
         
-        # ADX
-        df['ADX'] = ta.adx(high, low, close, length=14)['ADX_14']
+        # ADX Calculation (Simplified)
+        high_low = high - low
+        high_close = (high - close.shift()).abs()
+        low_close = (low - close.shift()).abs()
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        atr = tr.rolling(window=14).mean()
+        
+        plus_dm = high.diff()
+        minus_dm = low.diff()
+        plus_dm[plus_dm < 0] = 0
+        minus_dm[minus_dm > 0] = 0
+        
+        plus_di = 100 * (plus_dm.ewm(alpha=1/14).mean() / atr)
+        minus_di = 100 * (abs(minus_dm.ewm(alpha=1/14).mean()) / atr)
+        dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
+        df['ADX'] = dx.rolling(window=14).mean()
         
         # ATR for stop loss calculation
-        df['ATR'] = ta.atr(high, low, close, length=14)
+        df['ATR'] = atr
         
         # Volume indicators
-        df['Volume_SMA20'] = ta.sma(volume, length=20)
+        df['Volume_SMA20'] = volume.rolling(window=20).mean()
         df['Volume_Ratio'] = volume / df['Volume_SMA20']
         
         # Support and Resistance
@@ -197,7 +196,8 @@ class DataHandler:
         
         # Price position indicators
         df['Price_VWAP_Ratio'] = close / df['VWAP']
-        df['Price_BB_Position'] = (close - df['BB_lower']) / (df['BB_upper'] - df['BB_lower'])
+        bb_range = df['BB_upper'] - df['BB_lower']
+        df['Price_BB_Position'] = (close - df['BB_lower']) / bb_range.replace(0, np.nan)
         
         # Trend indicators
         df['EMA_Trend'] = np.where(
@@ -239,10 +239,10 @@ class SignalGenerator:
                     'type': 'BUY',
                     'weight': 3,
                     'conditions': [
-                        lambda d: d['close'] > d.get('EMA8', 0),
+                        lambda d: d.get('Close', 0) > d.get('EMA8', 0),
                         lambda d: d.get('EMA8', 0) > d.get('EMA21', 0),
                         lambda d: d.get('EMA21', 0) > d.get('EMA50', 0),
-                        lambda d: d['close'] > d.get('VWAP', 0),
+                        lambda d: d.get('Close', 0) > d.get('VWAP', 0),
                         lambda d: d.get('ADX', 0) > 25,
                         lambda d: d.get('Volume_Ratio', 0) > 1.2
                     ]
@@ -254,7 +254,7 @@ class SignalGenerator:
                     'conditions': [
                         lambda d: d.get('MACD', 0) > d.get('MACD_signal', 0),
                         lambda d: d.get('EMA8', 0) > d.get('EMA21', 0),
-                        lambda d: d['close'] > d.get('VWAP', 0),
+                        lambda d: d.get('Close', 0) > d.get('VWAP', 0),
                         lambda d: d.get('Volume_Ratio', 0) > 1.0
                     ]
                 }
@@ -266,7 +266,7 @@ class SignalGenerator:
                     'weight': 2,
                     'conditions': [
                         lambda d: 25 < d.get('RSI', 50) < 35,
-                        lambda d: d['close'] > d.get('Support', 0),
+                        lambda d: d.get('Close', 0) > d.get('Support', 0),
                         lambda d: d.get('Volume_Ratio', 0) > 0.8
                     ]
                 },
@@ -275,7 +275,7 @@ class SignalGenerator:
                     'type': 'BUY',
                     'weight': 3,
                     'conditions': [
-                        lambda d: d['close'] <= d.get('BB_lower', 0) * 1.01,
+                        lambda d: d.get('Close', 0) <= d.get('BB_lower', float('inf')) * 1.01,
                         lambda d: d.get('RSI', 50) < 40,
                         lambda d: d.get('Volume_Ratio', 0) > 1.0
                     ]
@@ -288,7 +288,7 @@ class SignalGenerator:
                     'weight': 4,
                     'conditions': [
                         lambda d: d.get('Volume_Ratio', 0) > 1.8,
-                        lambda d: d['close'] > d.get('Resistance', 0),
+                        lambda d: d.get('Close', 0) > d.get('Resistance', 0),
                         lambda d: d.get('RSI', 50) < 70,
                         lambda d: d.get('ADX', 0) > 20
                     ]
@@ -299,7 +299,7 @@ class SignalGenerator:
                     'weight': 4,
                     'conditions': [
                         lambda d: d.get('Volume_Ratio', 0) > 1.8,
-                        lambda d: d['close'] < d.get('Support', 0),
+                        lambda d: d.get('Close', 0) < d.get('Support', 0),
                         lambda d: d.get('RSI', 50) > 30,
                         lambda d: d.get('ADX', 0) > 20
                     ]
@@ -311,10 +311,10 @@ class SignalGenerator:
                     'type': 'SELL',
                     'weight': 3,
                     'conditions': [
-                        lambda d: d['close'] < d.get('EMA8', 0),
+                        lambda d: d.get('Close', 0) < d.get('EMA8', 0),
                         lambda d: d.get('EMA8', 0) < d.get('EMA21', 0),
                         lambda d: d.get('EMA21', 0) < d.get('EMA50', 0),
-                        lambda d: d['close'] < d.get('VWAP', 0),
+                        lambda d: d.get('Close', 0) < d.get('VWAP', 0),
                         lambda d: d.get('ADX', 0) > 25,
                         lambda d: d.get('Volume_Ratio', 0) > 1.2
                     ]
@@ -325,7 +325,7 @@ class SignalGenerator:
                     'weight': 2,
                     'conditions': [
                         lambda d: 65 < d.get('RSI', 50) < 75,
-                        lambda d: d['close'] < d.get('Resistance', 0),
+                        lambda d: d.get('Close', 0) < d.get('Resistance', 0),
                         lambda d: d.get('Volume_Ratio', 0) > 0.8
                     ]
                 },
@@ -334,7 +334,7 @@ class SignalGenerator:
                     'type': 'SELL',
                     'weight': 3,
                     'conditions': [
-                        lambda d: d['close'] >= d.get('BB_upper', 0) * 0.99,
+                        lambda d: d.get('Close', 0) >= d.get('BB_upper', 0) * 0.99,
                         lambda d: d.get('RSI', 50) > 60,
                         lambda d: d.get('Volume_Ratio', 0) > 1.0
                     ]
@@ -344,7 +344,7 @@ class SignalGenerator:
     
     def generate_signal(self, data: Dict) -> Dict:
         """Generate trading signal based on all strategies"""
-        if not data or 'close' not in data:
+        if not data or 'Close' not in data:
             return {'signal_type': 'HOLD', 'signal_score': 0, 'triggered_strategies': []}
         
         buy_score = 0
@@ -400,7 +400,7 @@ class SignalGenerator:
             'triggered_strategies': triggered_strategies[:5],  # Limit to top 5
             'timestamp': datetime.now(),
             'asset': data.get('asset', ''),
-            'price': data.get('close', 0)
+            'price': data.get('Close', 0)
         }
 
 
@@ -498,7 +498,6 @@ class TradingBot:
         self.running = False
         self.signals = {}
         self.trades = []
-        self.performance = {}
         
         # Load existing trades if any
         self.load_trades()
@@ -526,7 +525,7 @@ class TradingBot:
             # Fetch latest data
             data = self.data_handler.get_latest_data(asset_name)
             
-            if not data or 'close' not in data:
+            if not data or 'Close' not in data:
                 return None
             
             # Generate signal
@@ -540,7 +539,7 @@ class TradingBot:
             
             # Calculate entry, stop, and target if there's a signal
             if signal['signal_type'] != 'HOLD':
-                entry_price = data['close']
+                entry_price = data['Close']
                 stop_loss, take_profit, rr_ratio = self.risk_manager.calculate_stop_target(
                     entry_price=entry_price,
                     signal_type=signal['signal_type'],
@@ -577,7 +576,7 @@ class TradingBot:
             return signal
             
         except Exception as e:
-            logger.error(f"Error analyzing {asset_name}: {str(e)}")
+            st.error(f"Error analyzing {asset_name}: {str(e)}")
             return None
     
     def execute_trade(self, asset: str, signal: Dict, action: str = 'paper'):
@@ -605,7 +604,7 @@ class TradingBot:
         self.trades.append(trade)
         self.save_trades()
         
-        logger.info(f"Executed {action} trade for {asset}: {signal['signal_type']} @ ${signal['entry_price']:.2f}")
+        st.success(f"Executed {action} trade for {asset}: {signal['signal_type']} @ ${signal['entry_price']:.2f}")
         
         return trade
     
@@ -623,7 +622,7 @@ class TradingBot:
                 else:  # SELL or STRONG_SELL
                     pnl = (entry_price - current_price) * position_size
                 
-                pnl_percent = (pnl / (entry_price * position_size)) * 100
+                pnl_percent = (pnl / (entry_price * position_size)) * 100 if entry_price * position_size > 0 else 0
                 
                 trade['current_price'] = current_price
                 trade['pnl'] = pnl
@@ -672,11 +671,13 @@ class TradingBot:
                 'win_rate': 0,
                 'avg_win': 0,
                 'avg_loss': 0,
-                'profit_factor': 0
+                'profit_factor': 0,
+                'open_trades': 0,
+                'open_pnl': 0
             }
         
-        closed_trades = [t for t in self.trades if t['status'] == 'CLOSED']
-        open_trades = [t for t in self.trades if t['status'] == 'OPEN']
+        closed_trades = [t for t in self.trades if t.get('status') == 'CLOSED']
+        open_trades = [t for t in self.trades if t.get('status') == 'OPEN']
         
         total_pnl = sum(t.get('pnl', 0) for t in closed_trades)
         winning_trades = [t for t in closed_trades if t.get('pnl', 0) > 0]
@@ -711,7 +712,6 @@ class StreamlitApp:
     
     def __init__(self):
         self.bot = None
-        self.analysis_thread = None
         self.last_update = None
         
     def initialize_bot(self, config: Dict):
@@ -719,12 +719,7 @@ class StreamlitApp:
         self.bot = TradingBot(config)
         st.session_state.bot_initialized = True
         st.session_state.config = config
-        
-    def run_analysis_in_thread(self):
-        """Run analysis in a separate thread"""
-        if self.bot:
-            self.bot.run_analysis()
-            self.last_update = datetime.now()
+        st.success("✅ Trading bot initialized successfully!")
     
     def display_header(self):
         """Display application header"""
@@ -740,8 +735,7 @@ class StreamlitApp:
     def display_sidebar(self):
         """Display sidebar with configuration"""
         with st.sidebar:
-            st.image("https://img.icons8.com/color/96/000000/bitcoin--v1.png", width=100)
-            st.title("Configuration")
+            st.title("⚙️ Configuration")
             
             # Trading Parameters
             st.subheader("Trading Parameters")
@@ -770,20 +764,12 @@ class StreamlitApp:
                 index=0
             )
             
-            # Trading Mode
-            st.subheader("Trading Mode")
-            trading_mode = st.radio(
-                "Select Mode",
-                ["Paper Trading", "Live Trading"],
-                index=0
-            )
-            
             # Action Buttons
             st.subheader("Actions")
             col1, col2 = st.columns(2)
             
             with col1:
-                if st.button("🚀 Initialize Bot", use_container_width=True):
+                if st.button("🚀 Initialize Bot", use_container_width=True, type="primary"):
                     config = {
                         'capital': capital,
                         'max_risk_per_trade': max_risk,
@@ -792,40 +778,39 @@ class StreamlitApp:
                         'lookback_days': 30
                     }
                     self.initialize_bot(config)
-                    st.success("Trading bot initialized!")
             
             with col2:
                 if st.button("🔄 Run Analysis", use_container_width=True):
-                    if self.bot:
-                        self.run_analysis_in_thread()
+                    if 'bot_initialized' in st.session_state and st.session_state.bot_initialized:
+                        with st.spinner("Running analysis..."):
+                            self.bot.run_analysis()
+                            self.last_update = datetime.now()
+                        st.success("Analysis complete!")
                         st.rerun()
                     else:
                         st.warning("Please initialize the bot first")
             
-            # Auto-refresh
-            st.subheader("Auto-Refresh")
-            auto_refresh = st.checkbox("Enable Auto-Refresh", False)
-            if auto_refresh:
-                refresh_interval = st.slider("Refresh Interval (seconds)", 10, 300, 60, 10)
-                time.sleep(refresh_interval)
-                st.rerun()
-            
             # Performance Summary
-            if self.bot and hasattr(self.bot, 'trades'):
+            if 'bot_initialized' in st.session_state and st.session_state.bot_initialized:
                 st.divider()
-                st.subheader("Performance Summary")
+                st.subheader("📊 Performance Summary")
                 metrics = self.bot.get_performance_metrics()
                 
-                st.metric("Total P&L", f"${metrics['total_pnl']:.2f}")
-                st.metric("Win Rate", f"{metrics['win_rate']:.1f}%")
-                st.metric("Open Trades", metrics['open_trades'])
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Total P&L", f"${metrics['total_pnl']:.2f}", 
+                             f"${metrics['open_pnl']:.2f} open")
+                    st.metric("Win Rate", f"{metrics['win_rate']:.1f}%")
+                with col2:
+                    st.metric("Total Trades", metrics['total_trades'])
+                    st.metric("Open Trades", metrics['open_trades'])
     
     def display_signals_dashboard(self):
         """Display trading signals dashboard"""
         st.header("📊 Trading Signals Dashboard")
         
         if not self.bot or not self.bot.signals:
-            st.info("No signals available. Run analysis to generate signals.")
+            st.info("No signals available. Click 'Run Analysis' to generate signals.")
             return
         
         # Create metrics row
@@ -837,16 +822,19 @@ class StreamlitApp:
                 if signal['signal_type'] in ['STRONG_BUY', 'BUY']:
                     color = "#00C853"
                     icon = "🟢"
+                    bg_color = "#E8F5E9"
                 elif signal['signal_type'] in ['STRONG_SELL', 'SELL']:
                     color = "#FF5252"
                     icon = "🔴"
+                    bg_color = "#FFEBEE"
                 else:
                     color = "#FFC107"
                     icon = "🟡"
+                    bg_color = "#FFF8E1"
                 
                 # Create metric card
                 st.markdown(f"""
-                <div style='border: 2px solid {color}; padding: 15px; border-radius: 10px; text-align: center;'>
+                <div style='border: 2px solid {color}; background-color: {bg_color}; padding: 15px; border-radius: 10px; text-align: center;'>
                     <h3>{icon} {asset}</h3>
                     <h4 style='color: {color};'>{signal['signal_type']}</h4>
                     <p>Score: <b>{signal['signal_score']}</b></p>
@@ -856,16 +844,10 @@ class StreamlitApp:
                 
                 # Show action buttons
                 if signal['signal_type'] != 'HOLD':
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button(f"📈 Buy", key=f"buy_{asset}", use_container_width=True):
-                            trade = self.bot.execute_trade(asset, signal, 'paper')
-                            if trade:
-                                st.success(f"Paper trade executed for {asset}")
-                    with col2:
-                        if st.button(f"📉 Sell", key=f"sell_{asset}", use_container_width=True):
-                            # For sell signals, we would short
-                            st.info("Short selling not implemented in paper trading")
+                    if st.button(f"📈 Paper Trade", key=f"trade_{asset}", use_container_width=True):
+                        trade = self.bot.execute_trade(asset, signal, 'paper')
+                        if trade:
+                            st.rerun()
         
         # Detailed signals table
         st.subheader("Detailed Signal Analysis")
@@ -879,20 +861,21 @@ class StreamlitApp:
                 'Price': f"${signal.get('price', 0):.2f}",
                 'Buy Score': signal['buy_score'],
                 'Sell Score': signal['sell_score'],
-                'Strategies': ', '.join(signal['triggered_strategies'][:3]),
-                'RSI': signal.get('indicators', {}).get('RSI', 0),
-                'Volume Ratio': signal.get('indicators', {}).get('Volume_Ratio', 0)
+                'Strategies': ', '.join(signal['triggered_strategies'][:3]) if signal['triggered_strategies'] else 'None',
+                'RSI': f"{signal.get('indicators', {}).get('RSI', 0):.1f}",
+                'Volume Ratio': f"{signal.get('indicators', {}).get('Volume_Ratio', 0):.2f}"
             })
         
         if signals_data:
             df_signals = pd.DataFrame(signals_data)
-            st.dataframe(df_signals, use_container_width=True)
+            st.dataframe(df_signals, use_container_width=True, hide_index=True)
     
     def display_charts(self):
         """Display price charts for selected assets"""
         st.header("📈 Price Charts")
         
         if not self.bot:
+            st.info("Initialize the bot first to view charts.")
             return
         
         # Let user select asset to chart
@@ -915,10 +898,10 @@ class StreamlitApp:
                 fig.add_trace(
                     go.Candlestick(
                         x=df.index,
-                        open=df['open'],
-                        high=df['high'],
-                        low=df['low'],
-                        close=df['close'],
+                        open=df['Open'],
+                        high=df['High'],
+                        low=df['Low'],
+                        close=df['Close'],
                         name='Price'
                     ),
                     row=1, col=1
@@ -944,7 +927,7 @@ class StreamlitApp:
                             x=df.index,
                             y=df['BB_upper'],
                             name='BB Upper',
-                            line=dict(width=1, color='gray'),
+                            line=dict(width=1, color='gray', dash='dash'),
                             showlegend=False
                         ),
                         row=1, col=1
@@ -954,7 +937,7 @@ class StreamlitApp:
                             x=df.index,
                             y=df['BB_lower'],
                             name='BB Lower',
-                            line=dict(width=1, color='gray'),
+                            line=dict(width=1, color='gray', dash='dash'),
                             fill='tonexty',
                             fillcolor='rgba(128, 128, 128, 0.1)',
                             showlegend=False
@@ -976,17 +959,19 @@ class StreamlitApp:
                     # Add RSI levels
                     fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
                     fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+                    fig.add_hline(y=50, line_dash="dot", line_color="gray", row=2, col=1)
                 
                 # Volume
-                colors = ['red' if row['close'] < row['open'] else 'green' 
+                colors = ['red' if row['Close'] < row['Open'] else 'green' 
                          for _, row in df.iterrows()]
                 
                 fig.add_trace(
                     go.Bar(
                         x=df.index,
-                        y=df['volume'],
+                        y=df['Volume'],
                         name='Volume',
-                        marker_color=colors
+                        marker_color=colors,
+                        showlegend=False
                     ),
                     row=3, col=1
                 )
@@ -995,12 +980,13 @@ class StreamlitApp:
                 fig.update_layout(
                     height=800,
                     showlegend=True,
-                    xaxis_rangeslider_visible=False
+                    xaxis_rangeslider_visible=False,
+                    template='plotly_white'
                 )
                 
                 fig.update_xaxes(title_text="Date", row=3, col=1)
                 fig.update_yaxes(title_text="Price", row=1, col=1)
-                fig.update_yaxes(title_text="RSI", row=2, col=1)
+                fig.update_yaxes(title_text="RSI", row=2, col=1, range=[0, 100])
                 fig.update_yaxes(title_text="Volume", row=3, col=1)
                 
                 st.plotly_chart(fig, use_container_width=True)
@@ -1010,35 +996,39 @@ class StreamlitApp:
         st.header("💼 Trade Management")
         
         if not self.bot or not self.bot.trades:
-            st.info("No trades yet. Signals will appear here when executed.")
+            st.info("No trades yet. Execute paper trades from the dashboard.")
             return
         
         # Tabs for open and closed trades
         tab1, tab2 = st.tabs(["📊 Open Trades", "📋 Trade History"])
         
         with tab1:
-            open_trades = [t for t in self.bot.trades if t['status'] == 'OPEN']
+            open_trades = [t for t in self.bot.trades if t.get('status') == 'OPEN']
             
             if open_trades:
                 # Create DataFrame for display
                 trades_data = []
                 for trade in open_trades:
+                    current_price = trade.get('current_price', trade['entry_price'])
+                    pnl = trade.get('pnl', 0)
+                    pnl_color = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
+                    
                     trades_data.append({
                         'ID': trade['id'][-8:],
                         'Asset': trade['asset'],
                         'Type': trade['signal_type'],
-                        'Entry Price': f"${trade['entry_price']:.2f}",
-                        'Current Price': f"${trade.get('current_price', trade['entry_price']):.2f}",
-                        'Stop Loss': f"${trade['stop_loss']:.2f}",
-                        'Take Profit': f"${trade['take_profit']:.2f}",
-                        'Position Size': f"{trade['position_size']:.4f}",
-                        'P&L': f"${trade.get('pnl', 0):.2f}",
+                        'Entry': f"${trade['entry_price']:.2f}",
+                        'Current': f"${current_price:.2f}",
+                        'Stop': f"${trade['stop_loss']:.2f}",
+                        'Target': f"${trade['take_profit']:.2f}",
+                        'Size': f"{trade['position_size']:.4f}",
+                        'P&L': f"{pnl_color} ${pnl:.2f}",
                         'P&L %': f"{trade.get('pnl_percent', 0):.2f}%",
                         'R:R': f"{trade['risk_reward']:.2f}:1"
                     })
                 
                 df_trades = pd.DataFrame(trades_data)
-                st.dataframe(df_trades, use_container_width=True)
+                st.dataframe(df_trades, use_container_width=True, hide_index=True)
                 
                 # Close trade button
                 st.subheader("Close Trade")
@@ -1058,14 +1048,14 @@ class StreamlitApp:
                 st.info("No open trades")
         
         with tab2:
-            closed_trades = [t for t in self.bot.trades if t['status'] == 'CLOSED']
+            closed_trades = [t for t in self.bot.trades if t.get('status') == 'CLOSED']
             
             if closed_trades:
                 # Create DataFrame for display
                 trades_data = []
                 for trade in closed_trades[-20:]:  # Show last 20 trades
                     pnl = trade.get('pnl', 0)
-                    pnl_color = "positive" if pnl > 0 else "negative"
+                    pnl_color = "🟢" if pnl > 0 else "🔴"
                     
                     trades_data.append({
                         'ID': trade['id'][-8:],
@@ -1073,15 +1063,14 @@ class StreamlitApp:
                         'Type': trade['signal_type'],
                         'Entry': f"${trade['entry_price']:.2f}",
                         'Exit': f"${trade.get('exit_price', 0):.2f}",
-                        'P&L': f"${pnl:.2f}",
+                        'P&L': f"{pnl_color} ${pnl:.2f}",
                         'P&L %': f"{trade.get('pnl_percent', 0):.2f}%",
                         'Result': 'WIN' if pnl > 0 else 'LOSS',
-                        'Reason': trade.get('exit_reason', 'N/A'),
-                        'Duration': 'N/A'
+                        'Reason': trade.get('exit_reason', 'N/A')
                     })
                 
                 df_closed = pd.DataFrame(trades_data)
-                st.dataframe(df_closed, use_container_width=True)
+                st.dataframe(df_closed, use_container_width=True, hide_index=True)
                 
                 # Performance summary
                 st.subheader("Performance Summary")
@@ -1095,7 +1084,8 @@ class StreamlitApp:
                 with col3:
                     st.metric("Avg Win", f"${metrics['avg_win']:.2f}")
                 with col4:
-                    st.metric("Profit Factor", f"{metrics['profit_factor']:.2f}")
+                    pf = metrics['profit_factor']
+                    st.metric("Profit Factor", f"{pf:.2f}" if pf != float('inf') else "∞")
             else:
                 st.info("No closed trades yet")
     
@@ -1104,6 +1094,7 @@ class StreamlitApp:
         st.header("🔍 Asset Details")
         
         if not self.bot:
+            st.info("Initialize the bot first to view asset details.")
             return
         
         # Create tabs for each asset
@@ -1133,7 +1124,7 @@ class StreamlitApp:
                         with col1:
                             rsi = indicators.get('RSI', 50)
                             rsi_color = "green" if rsi < 30 else "red" if rsi > 70 else "orange"
-                            st.metric("RSI", f"{rsi:.1f}", delta_color="off")
+                            st.metric("RSI", f"{rsi:.1f}")
                             st.progress(min(max(rsi / 100, 0), 1))
                         
                         with col2:
@@ -1173,7 +1164,7 @@ class StreamlitApp:
         self.display_header()
         self.display_sidebar()
         
-        if hasattr(st.session_state, 'bot_initialized') and st.session_state.bot_initialized:
+        if 'bot_initialized' in st.session_state and st.session_state.bot_initialized:
             # Display main content in tabs
             tab1, tab2, tab3, tab4 = st.tabs([
                 "📊 Dashboard",
@@ -1195,37 +1186,57 @@ class StreamlitApp:
                 self.display_asset_details()
         else:
             # Show welcome screen
-            st.info("👈 Please configure the bot in the sidebar and click 'Initialize Bot' to get started.")
+            st.info("👈 **Please configure the bot in the sidebar and click 'Initialize Bot' to get started.**")
             
             # Display features
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.subheader("📈 Multi-Asset Support")
-                st.write("Trade 6 major assets:")
-                st.write("• USOIL (Crude Oil)")
-                st.write("• GOLD")
-                st.write("• BTC (Bitcoin)")
-                st.write("• ETH (Ethereum)")
-                st.write("• XRP (Ripple)")
-                st.write("• SOLANA")
+                st.write("""
+                • USOIL (Crude Oil)  
+                • GOLD  
+                • BTC (Bitcoin)  
+                • ETH (Ethereum)  
+                • XRP (Ripple)  
+                • SOLANA
+                """)
             
             with col2:
                 st.subheader("⚙️ Advanced Strategies")
-                st.write("Multiple trading strategies:")
-                st.write("• Trend Following")
-                st.write("• Mean Reversion")
-                st.write("• Breakout Trading")
-                st.write("• Volume Analysis")
-                st.write("• Risk Management")
+                st.write("""
+                • Trend Following  
+                • Mean Reversion  
+                • Breakout Trading  
+                • Volume Analysis  
+                • Risk Management
+                """)
             
             with col3:
                 st.subheader("🛡️ Risk Management")
-                st.write("Professional risk controls:")
-                st.write("• ATR-based Stop Loss")
-                st.write("• Position Sizing")
-                st.write("• 2.5:1 Minimum R:R")
-                st.write("• Max Risk per Trade")
-                st.write("• Paper Trading Mode")
+                st.write("""
+                • ATR-based Stop Loss  
+                • Position Sizing  
+                • 2.5:1 Minimum R:R  
+                • Max Risk per Trade  
+                • Paper Trading Mode
+                """)
+            
+            # Quick start guide
+            st.divider()
+            st.subheader("🚀 Quick Start Guide")
+            
+            steps = [
+                "1. **Set your capital** in the sidebar (start with $10,000 paper money)",
+                "2. **Select assets** you want to trade",
+                "3. **Choose timeframe** (15m recommended for day trading)",
+                "4. **Click 'Initialize Bot'**",
+                "5. **Click 'Run Analysis'** to generate signals",
+                "6. **Execute paper trades** from the dashboard",
+                "7. **Monitor performance** in the trades tab"
+            ]
+            
+            for step in steps:
+                st.write(step)
 
 
 def main():
