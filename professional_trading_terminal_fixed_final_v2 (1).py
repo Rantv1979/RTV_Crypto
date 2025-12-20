@@ -10,125 +10,127 @@ import plotly.graph_objects as go
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
 
-# --- UI CONFIG ---
-st.set_page_config(page_title="AI TERMINAL v3.0", layout="wide")
-
-# --- RISK MANAGEMENT MODULE ---
-def calculate_atr(df, period=14):
-    """Calculates Average True Range to measure market volatility."""
+# ==========================================
+# 1. ENHANCED INDICATOR ENGINE
+# ==========================================
+def compute_indicators(df):
+    df = df.copy()
+    # Technical Indicators
+    df['Returns'] = df['Close'].pct_change()
+    df['EMA_8'] = df['Close'].ewm(span=8, adjust=False).mean()
+    df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
+    
+    # RSI Calculation
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
+    
+    # ATR for Risk Management
     high_low = df['High'] - df['Low']
     high_close = np.abs(df['High'] - df['Close'].shift())
     low_close = np.abs(df['Low'] - df['Close'].shift())
-    ranges = pd.concat([high_low, high_close, low_close], axis=1)
-    true_range = np.max(ranges, axis=1)
-    return true_range.rolling(period).mean()
+    df['ATR'] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
 
-# --- THE SYSTEM ---
-class ProfessionalTrader:
+    # AI Features (Normalized)
+    df['Trend_Signal'] = (df['EMA_8'] - df['EMA_21']) / df['Close']
+    df['Momentum_Signal'] = df['RSI'] / 100.0
+    df['Volatility_Signal'] = df['Returns'].rolling(10).std()
+    
+    # Target: 1 if next candle close is higher
+    df['Target'] = (df['Close'].shift(-1) > df['Close']).astype(int)
+    return df.dropna()
+
+# ==========================================
+# 2. PROFESSIONAL TRADER CLASS
+# ==========================================
+class AutonomousSystem:
     def __init__(self):
         self.active = False
         self.balance = 100000.0
-        self.positions = {}  # Active trades
-        self.history = []    # Closed trades archive
+        self.positions = {}
+        self.history = []
         self.logs = []
-        self.model = RandomForestClassifier(n_estimators=100)
-        self.trained = False
+        self.model = RandomForestClassifier(n_estimators=100, max_depth=7)
+        self.is_trained = False
+        self.feature_cols = ['Trend_Signal', 'Momentum_Signal', 'Volatility_Signal']
 
-    def add_log(self, msg):
-        self.logs.insert(0, f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
-
-    def execute_trade(self, symbol, price, df, prob):
-        # VOLATILITY BASED RISK (ATR)
-        atr = calculate_atr(df).iloc[-1]
+    def train_ai(self, tickers):
+        data_list = []
+        for t in tickers[:5]:
+            d = yf.download(t, period="1mo", interval="1h", progress=False)
+            if not d.empty:
+                if isinstance(d.columns, pd.MultiIndex): d.columns = d.columns.get_level_values(0)
+                data_list.append(compute_indicators(d))
         
-        # Professional Risk: TP = 3x ATR, SL = 1.5x ATR (2:1 Reward/Risk)
-        stop_loss = price - (atr * 1.5)
-        take_profit = price + (atr * 3)
-        
-        self.positions[symbol] = {
-            'entry': price,
-            'sl': stop_loss,
-            'tp': take_profit,
-            'qty': 1000 / price,
-            'time': datetime.now(),
-            'confidence': prob
-        }
-        self.add_log(f"🚀 LONG {symbol} | SL: {stop_loss:.2f} | TP: {take_profit:.2f}")
+        if data_list:
+            full_df = pd.concat(data_list)
+            X = full_df[self.feature_cols]
+            y = full_df['Target']
+            self.model.fit(X, y)
+            self.is_trained = True
+            return True
+        return False
 
-    def close_trade(self, symbol, current_price, reason):
-        pos = self.positions.pop(symbol)
-        pnl = (current_price - pos['entry']) * pos['qty']
-        self.balance += (1000 + pnl)
-        
-        record = {
-            "Symbol": symbol,
-            "Entry": f"{pos['entry']:.2f}",
-            "Exit": f"{current_price:.2f}",
-            "PnL": round(pnl, 2),
-            "Reason": reason,
-            "Time": datetime.now().strftime("%Y-%m-%d %H:%M")
-        }
-        self.history.insert(0, record)
-        self.add_log(f"🔒 CLOSED {symbol} @ {current_price:.2f} | PnL: ${pnl:.2f} ({reason})")
+# ==========================================
+# 3. UI & VISUALIZATION
+# ==========================================
+st.set_page_config(page_title="AI TERMINAL v3.2", layout="wide")
 
-# --- ENGINE LOGIC ---
 if 'bot' not in st.session_state:
-    st.session_state.bot = ProfessionalTrader()
+    st.session_state.bot = AutonomousSystem()
 
 bot = st.session_state.bot
-st_autorefresh(interval=5000, key="auto_update")
+st_autorefresh(interval=5000, key="bot_update")
 
-# --- UI LAYOUT ---
-st.title("📟 AI AUTONOMOUS TERMINAL v3.0")
+# Metric Calculations
+wins = len([x for x in bot.history if x.get('PnL', 0) > 0])
+win_rate = f"{(wins/len(bot.history)*100):.1f}%" if bot.history else "0%"
 
-# Metrics
+# Header Metrics
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("ACCOUNT EQUITY", f"${bot.balance:,.2f}")
-m2.metric("ACTIVE TRADES", len(bot.positions))
-m3.metric("BOT STATUS", "ONLINE" if bot.active else "OFFLINE")
-m4.metric("WIN RATE", f"{len([x for x in bot.history if x['PnL'] > 0]) / len(bot.history) * 100:.1f}%" if bot.history else "0%")
+m1.metric("EQUITY", f"${bot.balance:,.2f}")
+m2.metric("ACTIVE", len(bot.positions))
+m3.metric("WIN RATE", win_rate)
+m4.metric("STATUS", "ONLINE" if bot.active else "OFFLINE")
 
-# Control Center
-tab1, tab2, tab3 = st.tabs(["📊 DASHBOARD", "📜 TRADING HISTORY", "⚙️ SYSTEM SETTINGS"])
+tab1, tab2, tab3 = st.tabs(["📊 Terminal", "🧠 AI Brain", "📜 History"])
 
 with tab1:
-    col_left, col_right = st.columns([2, 1])
-    
-    with col_left:
-        st.subheader("Live Market Analysis")
-        # Trading Logic Trigger (Simplified for Demo)
-        if bot.active and len(bot.positions) < 3:
-            # Here you would call your scanning logic
-            pass
-            
-        st.info("AI is currently monitoring 11 global assets for volatility breakouts.")
-        st.code("\n".join(bot.logs[:10]), language="bash")
-
-    with col_right:
-        st.subheader("Active Positions")
-        if bot.positions:
-            for sym, d in bot.positions.items():
-                with st.container():
-                    st.markdown(f"**{sym}**")
-                    st.caption(f"Entry: {d['entry']:.4f} → TP: {d['tp']:.4f}")
-                    st.progress(0.65) # Placeholder for price proximity
-        else:
-            st.write("No active exposure.")
+    st.subheader("Live Market Scanner")
+    st.code("\n".join(bot.logs[:5]) if bot.logs else "System standby...", language="bash")
+    # Candlestick chart logic here...
 
 with tab2:
-    st.subheader("Closed Trade Archive")
-    if bot.history:
-        history_df = pd.DataFrame(bot.history)
-        st.dataframe(history_df, use_container_width=True)
+    st.subheader("AI Feature Weighting")
+    if bot.is_trained:
+        # Generate the Importance Chart
+        importances = bot.model.feature_importances_
+        fig = go.Figure(go.Bar(
+            x=['Trend Strength', 'Momentum (RSI)', 'Volatility'],
+            y=importances,
+            marker_color='#00FF41'
+        ))
+        fig.update_layout(template="plotly_dark", height=300)
+        st.plotly_chart(fig, use_container_width=True)
         
-        # Mini Stats
-        total_pnl = sum([x['PnL'] for x in bot.history])
-        st.write(f"**Total Realized PnL:** :green[+${total_pnl:.2f}]" if total_pnl > 0 else f"**Total Realized PnL:** :red[${total_pnl:.2f}]")
     else:
-        st.info("No trades archived yet.")
+        st.info("Train the model to see indicator weights.")
 
 with tab3:
-    if st.button("▶️ ACTIVATE TERMINAL"): bot.active = True
-    if st.button("⏹️ DEACTIVATE TERMINAL"): bot.active = False
-    st.slider("Risk Per Trade ($)", 500, 5000, 1000)
+    st.subheader("Trade Ledger")
+    if bot.history:
+        st.table(pd.DataFrame(bot.history))
+    else:
+        st.write("No closed trades in this session.")
+
+# Sidebar Controls
+with st.sidebar:
+    st.header("Control Panel")
+    if st.button("START BOT"): 
+        bot.active = True
+        bot.train_ai(["BTC-USD", "ETH-USD", "EURUSD=X"])
+    if st.button("STOP BOT"): bot.active = False
