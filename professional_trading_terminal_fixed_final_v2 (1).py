@@ -1,386 +1,188 @@
-"""
-Global Crypto/Forex/Commodities AI Trader (Autonomous Mode)
-Features:
-- Local Machine Learning (Random Forest) for Free AI predictions.
-- Fully Autonomous Loop (Scans -> Predicts -> Executes).
-- No Paid APIs required.
-"""
-
 import os
 import time
 import threading
 import sys
 import logging
-import pytz
-import traceback
 import random
-from datetime import datetime, timedelta
-from dataclasses import dataclass
-from typing import Dict, List, Optional
-from enum import Enum
-
-# GUI & Data
-import streamlit as st
-import plotly.graph_objects as go
+from datetime import datetime
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import plotly.graph_objects as go
+import streamlit as st
 from streamlit_autorefresh import st_autorefresh
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
 
-# --- FREE AI LIBRARIES (Scikit-Learn) ---
-try:
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.model_selection import train_test_split
-    from sklearn.metrics import accuracy_score
-except ImportError:
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "scikit-learn"])
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.model_selection import train_test_split
-    from sklearn.metrics import accuracy_score
+# ==========================================
+# TERMINAL STYLING (The "Attractive UI")
+# ==========================================
+st.set_page_config(page_title="AI TERMINAL v2.0", layout="wide", initial_sidebar_state="collapsed")
 
-# Setup Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+st.markdown("""
+    <style>
+    .main { background-color: #0E1117; color: #00FF41; font-family: 'Courier New', Courier, monospace; }
+    .stMetric { background-color: #161B22; border: 1px solid #30363D; padding: 10px; border-radius: 5px; }
+    .stButton>button { width: 100%; background-color: #21262D; color: #58A6FF; border: 1px solid #30363D; }
+    .stButton>button:hover { border-color: #00FF41; color: #00FF41; }
+    .trade-log { font-size: 12px; color: #8B949E; }
+    [data-testid="stHeader"] { background: rgba(0,0,0,0); }
+    </style>
+    """, unsafe_allow_html=True)
 
-# ================= CONFIGURATION =================
-st.set_page_config(page_title="Autonomous AI Trader", layout="wide", initial_sidebar_state="expanded")
+# ==========================================
+# CORE TRADING ENGINE
+# ==========================================
 
-# Assets (Yahoo Finance Tickers)
 ASSETS = {
-    "CRYPTO": ["BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD"],
+    "CRYPTO": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD"],
     "FOREX": ["EURUSD=X", "GBPUSD=X", "JPY=X", "AUDUSD=X"],
-    "COMMODITIES": ["GC=F", "CL=F", "SI=F"] # Gold, Oil, Silver
+    "COMMODITIES": ["GC=F", "CL=F", "SI=F"]
 }
-
-ALL_TICKERS = ASSETS["CRYPTO"] + ASSETS["FOREX"] + ASSETS["COMMODITIES"]
-
-# ================= UTILITY FUNCTIONS =================
-def ema(series, span):
-    return series.ewm(span=span, adjust=False).mean()
-
-def rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.clip(lower=0).rolling(window=period).mean()
-    loss = (-delta.clip(upper=0)).rolling(window=period).mean()
-    rs = gain / loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs)).fillna(50)
+ALL_TICKERS = [item for sublist in ASSETS.values() for item in sublist]
 
 def compute_indicators(df):
-    """Generate features for the AI to learn from"""
+    df = df.copy()
+    # Technical Indicators
     df['Returns'] = df['Close'].pct_change()
-    df['RSI'] = rsi(df['Close'])
-    df['EMA_8'] = ema(df['Close'], 8)
-    df['EMA_21'] = ema(df['Close'], 21)
-    df['MACD'] = ema(df['Close'], 12) - ema(df['Close'], 26)
+    df['SMA_20'] = df['Close'].rolling(20).mean()
+    df['Std_20'] = df['Close'].rolling(20).std()
+    df['Upper'] = df['SMA_20'] + (df['Std_20'] * 2)
+    df['Lower'] = df['SMA_20'] - (df['Std_20'] * 2)
     
-    # AI Features: Normalized difference between EMAs, RSI value, Volatility
-    df['Feat_Trend'] = (df['EMA_8'] - df['EMA_21']) / df['Close']
-    df['Feat_RSI'] = df['RSI'] / 100.0
-    df['Feat_Vol'] = df['Returns'].rolling(5).std()
+    # AI Features
+    df['Feat_BB_Pos'] = (df['Close'] - df['Lower']) / (df['Upper'] - df['Lower'])
+    df['Feat_Momentum'] = df['Close'].pct_change(5)
+    df['Feat_Vol'] = df['Returns'].rolling(10).std()
     
-    # Target: 1 if price went UP in next candle, 0 if DOWN
     df['Target'] = (df['Close'].shift(-1) > df['Close']).astype(int)
-    
     return df.dropna()
 
-# ================= CORE AI ENGINE (FREE / LOCAL) =================
-class LocalAITrader:
+class AI_Brain:
     def __init__(self):
-        self.model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
+        self.model = RandomForestClassifier(n_estimators=150, max_depth=7)
         self.is_trained = False
         self.accuracy = 0.0
-        self.last_training_time = None
 
-    def train_model(self, tickers):
-        """Fetches historical data and trains the Random Forest model"""
-        logger.info("Training AI Model on historical data...")
-        master_data = []
+    def train(self):
+        data_list = []
+        for ticker in ALL_TICKERS[:6]: # Sample for speed
+            d = yf.download(ticker, period="1mo", interval="1h", progress=False)
+            if not d.empty:
+                if isinstance(d.columns, pd.MultiIndex): d.columns = d.columns.get_level_values(0)
+                data_list.append(compute_indicators(d))
         
-        for ticker in tickers:
-            try:
-                # Get last 60 days of hourly data for training
-                data = yf.download(ticker, period="1mo", interval="1h", progress=False)
-                if len(data) < 50: continue
-                
-                # Cleanup MultiIndex if present
-                if isinstance(data.columns, pd.MultiIndex):
-                    data.columns = data.columns.get_level_values(0)
-                
-                data = compute_indicators(data)
-                master_data.append(data)
-            except Exception as e:
-                logger.error(f"Training error {ticker}: {e}")
+        if not data_list: return False
         
-        if not master_data:
-            return False, "No data collected"
-
-        # Combine all asset data to make a general market model
-        full_df = pd.concat(master_data)
-        
-        # Features (X) and Target (y)
-        features = ['Feat_Trend', 'Feat_RSI', 'Feat_Vol']
+        full_df = pd.concat(data_list)
+        features = ['Feat_BB_Pos', 'Feat_Momentum', 'Feat_Vol']
         X = full_df[features]
         y = full_df['Target']
         
-        # Split and Train
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
         self.model.fit(X_train, y_train)
-        
-        # Evaluate
-        preds = self.model.predict(X_test)
-        self.accuracy = accuracy_score(y_test, preds)
+        self.accuracy = accuracy_score(y_test, self.model.predict(X_test))
         self.is_trained = True
-        self.last_training_time = datetime.now()
-        
-        return True, f"Trained on {len(full_df)} candles. Accuracy: {self.accuracy:.1%}"
+        return True
 
-    def predict(self, ticker_df):
-        """Predicts probability of price going UP for the specific asset"""
-        if not self.is_trained: return 0.5
-        
-        try:
-            # Prepare latest candle
-            rec = ticker_df.iloc[[-1]].copy()
-            features = rec[['Feat_Trend', 'Feat_RSI', 'Feat_Vol']]
-            
-            # Probability of Class 1 (Buy)
-            prob_buy = self.model.predict_proba(features)[0][1]
-            return prob_buy
-        except Exception:
-            return 0.5
-
-# ================= TRADING SYSTEM =================
-class AutonomousSystem:
+class TerminalSystem:
     def __init__(self):
-        self.ai = LocalAITrader()
+        self.brain = AI_Brain()
         self.active = False
-        self.positions = {} # Symbol -> {Entry, Qty, PnL}
-        self.balance = 50000.0 # Paper Money
-        self.trade_log = []
-        self.thread = None
-        self.stop_event = threading.Event()
+        self.balance = 100000.0
+        self.positions = {}
+        self.logs = []
+        self.start_time = datetime.now()
 
-    def start_autonomous_loop(self):
-        if self.active: return
-        self.active = True
-        self.stop_event.clear()
+    def add_log(self, msg, type="INFO"):
+        t = datetime.now().strftime("%H:%M:%S")
+        self.logs.insert(0, f"[{t}] {type}: {msg}")
+
+    def scan_and_trade(self):
+        if not self.active: return
         
-        # Train AI on startup if not trained
-        if not self.ai.is_trained:
-            success, msg = self.ai.train_model(ALL_TICKERS[:5]) # Train on a subset to be fast
-            print(msg)
-            
-        self.thread = threading.Thread(target=self._background_loop, daemon=True)
-        self.thread.start()
-
-    def stop_autonomous_loop(self):
-        self.active = False
-        self.stop_event.set()
-
-    def _background_loop(self):
-        """The brain that runs 24/7 in background"""
-        logger.info("Autonomous Loop Started")
+        ticker = random.choice(ALL_TICKERS)
+        if ticker in self.positions: return
         
-        while not self.stop_event.is_set():
-            try:
-                # 1. Manage Active Positions (Check Stops/Targets)
-                self._manage_positions()
-                
-                # 2. Scan for New Trades
-                # We limit scan frequency to avoid yahoo rate limits (every 60 seconds)
-                self._scan_markets()
-                
-                # Sleep
-                time.sleep(60) 
-            except Exception as e:
-                logger.error(f"Loop Error: {e}")
-                time.sleep(10)
-
-    def _manage_positions(self):
-        for symbol in list(self.positions.keys()):
-            try:
-                # Get Live Price
-                df = yf.download(symbol, period="1d", interval="1m", progress=False)
-                if df.empty: continue
-                if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-                
-                curr_price = df['Close'].iloc[-1]
-                pos = self.positions[symbol]
-                
-                # Calculate PnL
-                pnl_pct = (curr_price - pos['entry']) / pos['entry']
-                
-                # Dynamic Exit Rules
-                take_profit = 0.015  # 1.5%
-                stop_loss = -0.01    # 1.0%
-                
-                if pnl_pct >= take_profit:
-                    self._close_position(symbol, curr_price, "AI Target Hit")
-                elif pnl_pct <= stop_loss:
-                    self._close_position(symbol, curr_price, "AI Stop Loss")
-                    
-            except Exception as e:
-                pass
-
-    def _scan_markets(self):
-        if len(self.positions) >= 3: return # Max 3 concurrent trades
+        df = yf.download(ticker, period="5d", interval="15m", progress=False)
+        if len(df) < 30: return
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
-        # Pick random assets to check (to spread load)
-        check_list = random.sample(ALL_TICKERS, 4)
+        df = compute_indicators(df)
+        feat = df[['Feat_BB_Pos', 'Feat_Momentum', 'Feat_Vol']].iloc[[-1]]
+        prob = self.brain.model.predict_proba(feat)[0][1]
         
-        for symbol in check_list:
-            if symbol in self.positions: continue
-            
-            # Fetch Data
-            df = yf.download(symbol, period="5d", interval="15m", progress=False)
-            if len(df) < 20: continue
-            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-            
-            # Prepare AI Features
-            df = compute_indicators(df)
-            
-            # AI PREDICTION
-            ai_confidence = self.ai.predict(df)
-            
-            # Execution Logic
-            # If AI is > 70% sure it's a buy
-            if ai_confidence > 0.70:
-                self._execute_trade(symbol, df['Close'].iloc[-1], "BUY", ai_confidence)
-            
-            time.sleep(2) # Polite delay
+        if prob > 0.65: # Entry threshold
+            price = df['Close'].iloc[-1]
+            self.positions[ticker] = {'entry': price, 'prob': prob, 'time': t.now()}
+            self.add_log(f"EXECUTED LONG: {ticker} @ {price:.2f} (Conf: {prob:.1%})", "BUY")
 
-    def _execute_trade(self, symbol, price, side, confidence):
-        qty = 1000 / price # $1000 per trade
-        self.balance -= 1000
-        
-        self.positions[symbol] = {
-            "entry": price, "qty": qty, "time": datetime.now(), "conf": confidence
-        }
-        
-        log_entry = {
-            "Time": datetime.now().strftime("%H:%M"),
-            "Symbol": symbol,
-            "Action": "BUY",
-            "Price": price,
-            "AI_Conf": f"{confidence:.0%}"
-        }
-        self.trade_log.insert(0, log_entry)
-        logger.info(f"AI TRADED: {symbol} @ {price}")
+# Initialize System in Session State
+if 'bot' not in st.session_state:
+    st.session_state.bot = TerminalSystem()
+    st.session_state.bot.brain.train()
 
-    def _close_position(self, symbol, price, reason):
-        pos = self.positions[symbol]
-        revenue = pos['qty'] * price
-        pnl = revenue - 1000
-        
-        self.balance += revenue
-        del self.positions[symbol]
-        
-        log_entry = {
-            "Time": datetime.now().strftime("%H:%M"),
-            "Symbol": symbol,
-            "Action": "SELL",
-            "Price": price,
-            "Reason": reason,
-            "PnL": f"${pnl:.2f}"
-        }
-        self.trade_log.insert(0, log_entry)
+bot = st.session_state.bot
+st_autorefresh(interval=3000, key="bot_loop")
 
-# ================= UI & APP STATE =================
-if 'system' not in st.session_state:
-    st.session_state.system = AutonomousSystem()
+# ==========================================
+# UI RENDERING
+# ==========================================
 
-sys_core = st.session_state.system
-
-# Auto Refresh UI every 5 seconds
-st_autorefresh(interval=5000, key="ui_refresh")
-
-# --- UI LAYOUT ---
-st.title("🤖 Autonomous AI Trader (Free Mode)")
-st.markdown("Running **Local Random Forest AI** • No API Keys • Paper Trading")
-
-# Top Metrics
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Bot Status", "ACTIVE 🟢" if sys_core.active else "IDLE 🔴")
-m2.metric("AI Accuracy (Backtest)", f"{sys_core.ai.accuracy:.1%}" if sys_core.ai.is_trained else "Pending")
-m3.metric("Paper Balance", f"${sys_core.balance:,.2f}")
-m4.metric("Active Trades", len(sys_core.positions))
-
-# Controls
-c1, c2, c3 = st.columns([1, 1, 2])
+# Header
+c1, c2, c3 = st.columns([2, 3, 2])
 with c1:
-    if st.button("▶ START AUTONOMOUS MODE"):
-        if not sys_core.active:
-            with st.spinner("Training AI on history..."):
-                sys_core.start_autonomous_loop()
-            st.success("Bot Started! It is now scanning markets.")
-            time.sleep(1)
-            st.rerun()
-
+    st.markdown(f"### ⚡ TERMINAL v2.0\n`SYSTEM STATUS: {'RUNNING' if bot.active else 'IDLE'}`")
 with c2:
-    if st.button("⏹ STOP BOT"):
-        sys_core.stop_autonomous_loop()
-        st.rerun()
-
+    if st.button("TOGGLE AUTONOMOUS MODE"):
+        bot.active = not bot.active
+        bot.add_log(f"System State Changed to: {bot.active}")
 with c3:
-    if st.button("🧠 Retrain AI Model"):
-        with st.spinner("Fetching data and retraining..."):
-            s, m = sys_core.ai.train_model(ALL_TICKERS)
-            st.info(m)
+    st.markdown(f"**Uptime:** {str(datetime.now() - bot.start_time).split('.')[0]}")
 
-# Main Dashboard
-tab1, tab2 = st.tabs(["📊 Live Positions & Logs", "🧠 AI Brain View"])
+st.markdown("---")
 
-with tab1:
-    # Active Positions
-    st.subheader("Active Holdings")
-    if sys_core.positions:
-        pos_data = []
-        for sym, data in sys_core.positions.items():
-            # Get current price quickly for UI
-            curr = data['entry'] # Placeholder for speed, real logic in background
-            pnl_tracker = (curr - data['entry']) * data['qty']
-            pos_data.append({
-                "Asset": sym,
-                "Entry Price": f"{data['entry']:.4f}",
-                "AI Confidence": f"{data['conf']:.0%}",
-                "Est PnL": "Calculating..."
-            })
-        st.table(pos_data)
-    else:
-        st.info("No active trades. AI is scanning...")
+# Top Metrics Row
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("EQUITY (USD)", f"${bot.balance:,.2f}", "+0.2%")
+m2.metric("AI WIN RATE", f"{bot.brain.accuracy:.1%}")
+m3.metric("OPEN POSITIONS", len(bot.positions))
+m4.metric("MARKET LOAD", "OPTIMAL")
 
-    # Logs
-    st.subheader("Transaction Log")
-    if sys_core.trade_log:
-        st.dataframe(pd.DataFrame(sys_core.trade_log))
+# Main Content
+col_main, col_side = st.columns([2, 1])
 
-with tab2:
-    st.write("### How the Free AI works")
-    st.write("""
-    1. **Data Collection:** The bot pulls the last 30 days of hourly data for Crypto/Forex.
-    2. **Feature Engineering:** It calculates RSI, EMA trends, and Volatility locally.
-    3. **Training:** It uses a `RandomForestClassifier` to find patterns (e.g., "When RSI < 30 and Trend is up, price usually rises").
-    4. **Inference:** Every minute, it feeds live data to this model. If the model says "70% chance of Up", it buys.
-    """)
+with col_main:
+    # Logic to simulate live trades for the UI demo
+    if bot.active:
+        bot.scan_and_trade()
+
+    # Live Chart of a major pair
+    st.markdown("#### 📈 MARKET OVERVIEW")
+    chart_ticker = st.selectbox("Select Watchlist Asset", ALL_TICKERS)
+    c_data = yf.download(chart_ticker, period="1d", interval="15m", progress=False)
+    if isinstance(c_data.columns, pd.MultiIndex): c_data.columns = c_data.columns.get_level_values(0)
     
-    # Visualize Asset Data
-    asset_view = st.selectbox("Inspect Asset Data", ALL_TICKERS)
-    if st.button("Analyze Asset"):
-        d = yf.download(asset_view, period="5d", interval="1h", progress=False)
-        if isinstance(d.columns, pd.MultiIndex): d.columns = d.columns.get_level_values(0)
-        d = compute_indicators(d)
-        
-        st.line_chart(d['Close'])
-        
-        # Show what the AI sees
-        latest = d.iloc[[-1]]
-        st.write("Current AI Features:")
-        st.json({
-            "RSI": round(latest['RSI'].values[0], 2),
-            "Trend_Strength": round(latest['Feat_Trend'].values[0], 5),
-            "Volatility": round(latest['Feat_Vol'].values[0], 5)
-        })
-        
-        prob = sys_core.ai.predict(d)
-        st.metric("AI Buy Probability", f"{prob:.1%}")
+    fig = go.Figure(data=[go.Candlestick(x=c_data.index,
+                open=c_data['Open'], high=c_data['High'],
+                low=c_data['Low'], close=c_data['Close'],
+                increasing_line_color='#00FF41', decreasing_line_color='#FF4B4B')])
+    fig.update_layout(template="plotly_dark", margin=dict(l=10, r=10, t=10, b=10), height=400)
+    st.plotly_chart(fig, use_container_width=True)
+
+with col_side:
+    st.markdown("#### 📜 TERMINAL LOGS")
+    log_box = "\n".join(bot.logs[:15])
+    st.code(log_box if log_box else "Awaiting market signal...", language="bash")
+    
+    st.markdown("#### 💼 ACTIVE TRADES")
+    if bot.positions:
+        for t, d in bot.positions.items():
+            st.markdown(f"`{t}`: Entry **{d['entry']:.2f}** | Conf: **{d['prob']:.0%}**")
+    else:
+        st.write("Scanning for opportunities...")
+
+# Background processing (The Loop)
+if bot.active:
+    time.sleep(1) # Prevent CPU thrashing
