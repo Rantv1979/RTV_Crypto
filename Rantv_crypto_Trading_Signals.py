@@ -36,7 +36,7 @@ st.set_page_config(
 
 UTC_TZ = pytz.timezone("UTC")
 
-# Trading Parameters - CHANGED FROM 100000 TO 1000
+# Trading Parameters - REALISTIC $1000 CAPITAL
 INITIAL_CAPITAL = 1000.0
 TRADE_ALLOCATION = 0.15
 MAX_DAILY_TRADES = 15
@@ -427,7 +427,7 @@ class BaseStrategy:
         rs = gain / loss.replace(0, np.nan)
         indicators['rsi'] = 100 - (100 / (1 + rs)).iloc[-1]
         
-        # MACD (fixed: using EMA_8 instead of EMA_12 which doesn't exist)
+        # MACD
         indicators['macd'] = indicators['ema_8']
         indicators['macd_signal'] = data['Close'].ewm(span=9).mean().iloc[-1]
         
@@ -913,6 +913,8 @@ class AlgorithmicTradingEngine:
             'losing_trades': 0,
             'win_rate': 0.0,
             'total_pnl': 0.0,
+            'total_wins': 0.0,
+            'total_losses': 0.0,
             'average_win': 0.0,
             'average_loss': 0.0,
             'profit_factor': 0.0,
@@ -928,6 +930,8 @@ class AlgorithmicTradingEngine:
             'wins': 0,
             'losses': 0,
             'total_pnl': 0.0,
+            'total_wins': 0.0,
+            'total_losses': 0.0,
             'win_rate': 0.0,
             'avg_win': 0.0,
             'avg_loss': 0.0
@@ -989,8 +993,10 @@ class AlgorithmicTradingEngine:
                 
                 if pnl > 0:
                     self.accuracy_metrics['profitable_trades'] += 1
+                    self.accuracy_metrics['total_wins'] += pnl
                 else:
                     self.accuracy_metrics['losing_trades'] += 1
+                    self.accuracy_metrics['total_losses'] += abs(pnl)
                 
                 # Update strategy performance
                 strategy = trade.get('strategy', 'unknown')
@@ -998,8 +1004,10 @@ class AlgorithmicTradingEngine:
                 self.strategy_performance[strategy]['total_pnl'] += pnl
                 if pnl > 0:
                     self.strategy_performance[strategy]['wins'] += 1
+                    self.strategy_performance[strategy]['total_wins'] += pnl
                 else:
                     self.strategy_performance[strategy]['losses'] += 1
+                    self.strategy_performance[strategy]['total_losses'] += abs(pnl)
     
     def start_trading(self):
         """Start the algorithmic trading system"""
@@ -1121,7 +1129,7 @@ class AlgorithmicTradingEngine:
             # Get current price
             current_price = self._get_current_price(symbol)
             
-            # Calculate position size - COMPLETELY REWRITTEN FOR $1000 CAPITAL
+            # Calculate position size - REALISTIC FOR $1000 CAPITAL
             quantity, position_value = self._calculate_realistic_position_size(signal, current_price)
             
             if quantity <= 0:
@@ -1147,7 +1155,7 @@ class AlgorithmicTradingEngine:
             return False, f"Trade execution failed: {str(e)}"
     
     def _calculate_realistic_position_size(self, signal, current_price):
-        """Calculate REALISTIC position size for $1000 capital - COMPLETELY REWRITTEN"""
+        """Calculate REALISTIC position size for $1000 capital"""
         # For $1000 capital with 2% risk per trade = $20 risk
         max_risk_amount = 20.0
         
@@ -1333,8 +1341,10 @@ class AlgorithmicTradingEngine:
         
         if pnl > 0:
             self.accuracy_metrics['profitable_trades'] += 1
+            self.accuracy_metrics['total_wins'] += pnl
         else:
             self.accuracy_metrics['losing_trades'] += 1
+            self.accuracy_metrics['total_losses'] += abs(pnl)
         
         # Update risk manager
         self.risk_manager.update_daily_loss(pnl)
@@ -1346,8 +1356,10 @@ class AlgorithmicTradingEngine:
         
         if pnl > 0:
             self.strategy_performance[strategy]['wins'] += 1
+            self.strategy_performance[strategy]['total_wins'] += pnl
         else:
             self.strategy_performance[strategy]['losses'] += 1
+            self.strategy_performance[strategy]['total_losses'] += abs(pnl)
         
         # Remove from open positions
         del self.positions[trade_id]
@@ -1367,27 +1379,18 @@ class AlgorithmicTradingEngine:
             self.accuracy_metrics['win_rate'] = winning_trades / total_trades
         
         # Calculate profit factor with realistic values
-        if self.accuracy_metrics['losing_trades'] > 0:
-            # Get only closed trades
-            closed_trades = [t for t in self.trade_history if t.get('status') == 'CLOSED']
-            if closed_trades:
-                total_wins = sum([t.get('closed_pnl', 0) for t in closed_trades if t.get('closed_pnl', 0) > 0])
-                total_losses = abs(sum([t.get('closed_pnl', 0) for t in closed_trades if t.get('closed_pnl', 0) < 0]))
-                
-                if total_losses > 0:
-                    self.accuracy_metrics['profit_factor'] = total_wins / total_losses
-                else:
-                    self.accuracy_metrics['profit_factor'] = float('inf')
+        if self.accuracy_metrics['total_losses'] > 0:
+            self.accuracy_metrics['profit_factor'] = self.accuracy_metrics['total_wins'] / self.accuracy_metrics['total_losses']
+        elif self.accuracy_metrics['total_wins'] > 0:
+            self.accuracy_metrics['profit_factor'] = float('inf')
         
         # Calculate average win/loss
         if winning_trades > 0:
-            self.accuracy_metrics['average_win'] = sum([t.get('closed_pnl', 0) for t in self.trade_history 
-                                                       if t.get('status') == 'CLOSED' and t.get('closed_pnl', 0) > 0]) / winning_trades
+            self.accuracy_metrics['average_win'] = self.accuracy_metrics['total_wins'] / winning_trades
         
         losing_trades = self.accuracy_metrics['losing_trades']
         if losing_trades > 0:
-            self.accuracy_metrics['average_loss'] = abs(sum([t.get('closed_pnl', 0) for t in self.trade_history 
-                                                           if t.get('status') == 'CLOSED' and t.get('closed_pnl', 0) < 0])) / losing_trades
+            self.accuracy_metrics['average_loss'] = self.accuracy_metrics['total_losses'] / losing_trades
         
         # Update strategy win rates
         for strategy, perf in self.strategy_performance.items():
@@ -1395,9 +1398,9 @@ class AlgorithmicTradingEngine:
             if total > 0:
                 perf['win_rate'] = perf['wins'] / total
                 if perf['wins'] > 0:
-                    perf['avg_win'] = perf['total_pnl'] / perf['wins']
+                    perf['avg_win'] = perf['total_wins'] / perf['wins']
                 if perf['losses'] > 0:
-                    perf['avg_loss'] = abs(perf['total_pnl']) / perf['losses']
+                    perf['avg_loss'] = perf['total_losses'] / perf['losses']
     
     def _update_session_metrics(self):
         """Update session metrics"""
@@ -1435,6 +1438,10 @@ class AlgorithmicTradingEngine:
             'total_pnl': self.accuracy_metrics['total_pnl'],
             'win_rate': self.accuracy_metrics['win_rate'],
             'total_trades': self.accuracy_metrics['executed_trades'],
+            'profitable_trades': self.accuracy_metrics['profitable_trades'],
+            'losing_trades': self.accuracy_metrics['losing_trades'],
+            'total_wins': self.accuracy_metrics['total_wins'],
+            'total_losses': self.accuracy_metrics['total_losses'],
             'profit_factor': self.accuracy_metrics['profit_factor'],
             'sharpe_ratio': self.accuracy_metrics['sharpe_ratio']
         }
@@ -1557,21 +1564,33 @@ def create_portfolio_dashboard(trading_engine):
             delta_color=pnl_color
         )
     
-    # Accuracy metrics
-    st.subheader("🎯 Accuracy Metrics")
-    acc_col1, acc_col2, acc_col3, acc_col4 = st.columns(4)
+    # Profit/Loss Dashboard
+    st.subheader("💰 Profit & Loss Dashboard")
     
-    with acc_col1:
-        st.metric("Win Rate", f"{portfolio['win_rate']:.1%}")
+    pl_col1, pl_col2, pl_col3, pl_col4, pl_col5, pl_col6 = st.columns(6)
     
-    with acc_col2:
+    with pl_col1:
         st.metric("Total Trades", portfolio['total_trades'])
     
-    with acc_col3:
-        st.metric("Profit Factor", f"{portfolio['profit_factor']:.2f}")
+    with pl_col2:
+        st.metric("Winning Trades", portfolio['profitable_trades'])
     
-    with acc_col4:
-        st.metric("Sharpe Ratio", f"{portfolio['sharpe_ratio']:.2f}")
+    with pl_col3:
+        st.metric("Losing Trades", portfolio['losing_trades'])
+    
+    with pl_col4:
+        win_rate_color = "normal" if portfolio['win_rate'] >= 0.5 else "inverse"
+        st.metric(
+            "Win Rate",
+            f"{portfolio['win_rate']:.1%}",
+            delta_color=win_rate_color
+        )
+    
+    with pl_col5:
+        st.metric("Total Wins", f"${portfolio['total_wins']:+,.2f}")
+    
+    with pl_col6:
+        st.metric("Total Losses", f"${portfolio['total_losses']:+,.2f}")
 
 def create_positions_dashboard(trading_engine):
     """Create positions dashboard"""
@@ -1618,7 +1637,7 @@ def create_positions_dashboard(trading_engine):
             st.divider()
 
 def create_trading_history_dashboard(trading_engine):
-    """Create comprehensive trading history dashboard - FIXED FOR REALISTIC VALUES"""
+    """Create comprehensive trading history dashboard - OPTIMIZED"""
     st.subheader("📋 Trading History & Accuracy Analysis")
     
     # Get trade history
@@ -1637,12 +1656,23 @@ def create_trading_history_dashboard(trading_engine):
         
         # Prepare data for display
         history_data = []
-        for trade in trade_history:
-            pnl = trade.get('closed_pnl', trade.get('pnl', 0))
-            pnl_percentage = trade.get('closed_pnl_percentage', trade.get('pnl_percentage', 0))
+        for idx, trade in enumerate(trade_history, 1):
+            # Calculate P&L
+            pnl = 0
+            pnl_percentage = 0
             
+            if trade['status'] == 'CLOSED':
+                pnl = trade.get('closed_pnl', 0)
+                if trade.get('position_value', 0) > 0:
+                    pnl_percentage = (pnl / trade.get('position_value', 0)) * 100
+            else:
+                pnl = trade.get('pnl', 0)
+                if trade.get('position_value', 0) > 0:
+                    pnl_percentage = (pnl / trade.get('position_value', 0)) * 100
+            
+            # Format data like your image
             history_data.append({
-                'ID': trade['trade_id'][-8:],
+                'ID': idx,
                 'Symbol': trade['symbol'],
                 'Action': trade['action'],
                 'Strategy': trade['strategy'],
@@ -1652,17 +1682,23 @@ def create_trading_history_dashboard(trading_engine):
                 'P&L': f"${pnl:+,.2f}",
                 'P&L %': f"{pnl_percentage:+.1f}%" if pnl_percentage else "N/A",
                 'Value': f"${trade.get('position_value', 0):.2f}",
-                'Status': trade['status'],
-                'Reason': trade.get('exit_reason', 'N/A'),
-                'Date': trade['timestamp'].strftime('%Y-%m-%d %H:%M') if isinstance(trade['timestamp'], datetime) else trade['timestamp']
+                'S': 'C' if trade['status'] == 'CLOSED' else 'O'
             })
         
         if history_data:
             df = pd.DataFrame(history_data)
-            st.dataframe(df, use_container_width=True, height=400)
+            
+            # Style the dataframe
+            def color_pnl(val):
+                color = 'green' if '+' in val else 'red' if '-' in val else 'black'
+                return f'color: {color}'
+            
+            styled_df = df.style.applymap(color_pnl, subset=['P&L', 'P&L %'])
+            st.dataframe(styled_df, use_container_width=True, height=400)
             
             # Summary statistics
             st.subheader("📊 Trade Summary")
+            
             closed_trades = [t for t in trade_history if t.get('status') == 'CLOSED']
             if closed_trades:
                 total_trades = len(closed_trades)
@@ -1676,21 +1712,11 @@ def create_trading_history_dashboard(trading_engine):
                 with col1:
                     st.metric("Total Trades", total_trades)
                 with col2:
-                    st.metric("Win Rate", f"{win_rate:.1f}%")
+                    st.metric("Winning Trades", winning_trades)
                 with col3:
-                    st.metric("Total P&L", f"${total_pnl:+,.2f}")
+                    st.metric("Losing Trades", losing_trades)
                 with col4:
-                    st.metric("Avg P&L", f"${avg_pnl:+,.2f}")
-            
-            # Export option
-            if st.button("📥 Export Trade History"):
-                csv = df.to_csv(index=False)
-                st.download_button(
-                    label="Download CSV",
-                    data=csv,
-                    file_name="trade_history.csv",
-                    mime="text/csv"
-                )
+                    st.metric("Win Rate", f"{win_rate:.1f}%")
     
     with tab2:
         # Performance charts
@@ -1719,7 +1745,7 @@ def create_trading_history_dashboard(trading_engine):
                 df_trades['Cumulative P&L'] = df_trades['P&L'].cumsum()
                 df_trades['Rolling Win Rate'] = (df_trades['P&L'] > 0).rolling(window=10).mean()
                 
-                # Cumulative P&L chart - REALISTIC SCALE
+                # Cumulative P&L chart
                 fig1 = go.Figure()
                 fig1.add_trace(go.Scatter(
                     x=df_trades['Date'],
@@ -1734,7 +1760,6 @@ def create_trading_history_dashboard(trading_engine):
                     xaxis_title="Date",
                     yaxis_title="Cumulative P&L ($)",
                     height=400,
-                    # Set realistic Y-axis range for $1000 capital
                     yaxis=dict(range=[min(df_trades['Cumulative P&L'].min() - 10, -50), 
                                      max(df_trades['Cumulative P&L'].max() + 10, 50)])
                 )
@@ -1759,7 +1784,7 @@ def create_trading_history_dashboard(trading_engine):
                 )
                 st.plotly_chart(fig2, use_container_width=True)
                 
-                # P&L distribution - REALISTIC SCALE
+                # P&L distribution
                 fig3 = px.histogram(df_trades, x='P&L', 
                                    title="P&L Distribution (Realistic $1000 Scale)",
                                    nbins=20,
@@ -1768,14 +1793,13 @@ def create_trading_history_dashboard(trading_engine):
                     height=400,
                     xaxis_title="P&L ($)",
                     yaxis_title="Count",
-                    # Set realistic X-axis range
                     xaxis=dict(range=[min(df_trades['P&L'].min() - 5, -30), 
                                      max(df_trades['P&L'].max() + 5, 30)])
                 )
                 st.plotly_chart(fig3, use_container_width=True)
     
     with tab3:
-        # Strategy analysis - FIXED FOR REALISTIC VALUES
+        # Strategy analysis
         st.subheader("🎯 Strategy Performance Analysis (Realistic)")
         
         strategy_perf = trading_engine.get_strategy_performance()
@@ -1785,7 +1809,6 @@ def create_trading_history_dashboard(trading_engine):
             perf_data = []
             for strategy, data in strategy_perf.items():
                 if data['trades'] > 0:
-                    # Format with realistic dollar amounts
                     perf_data.append({
                         'Strategy': strategy,
                         'Trades': data['trades'],
@@ -1799,9 +1822,26 @@ def create_trading_history_dashboard(trading_engine):
             
             if perf_data:
                 df_perf = pd.DataFrame(perf_data)
-                st.dataframe(df_perf, use_container_width=True)
                 
-                # Strategy comparison chart - FIXED COLORS
+                # Display as table like your image
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.markdown("**Strategy**")
+                    for row in df_perf.itertuples():
+                        st.write(row.Strategy)
+                
+                with col2:
+                    st.markdown("**Trades**")
+                    for row in df_perf.itertuples():
+                        st.write(row.Trades)
+                
+                with col3:
+                    st.markdown("**Wins**")
+                    for row in df_perf.itertuples():
+                        st.write(row.Wins)
+                
+                # Strategy comparison chart
                 fig = px.bar(df_perf, x='Strategy', y='Win Rate',
                            title="Strategy Win Rate Comparison",
                            color='Total P&L',
@@ -1810,7 +1850,7 @@ def create_trading_history_dashboard(trading_engine):
                 st.plotly_chart(fig, use_container_width=True)
     
     with tab4:
-        # Accuracy report - FIXED FOR REALISTIC VALUES
+        # Accuracy report
         st.subheader("📊 Comprehensive Accuracy Report")
         
         accuracy_report = trading_engine.get_accuracy_report()
@@ -1822,8 +1862,7 @@ def create_trading_history_dashboard(trading_engine):
         
         with col1:
             st.metric("Total Signals", accuracy_metrics['total_signals'])
-            st.metric("Signal to Trade Ratio", 
-                     f"{(accuracy_metrics['executed_trades'] / max(1, accuracy_metrics['total_signals'])):.1%}")
+            st.metric("Executed Trades", accuracy_metrics['executed_trades'])
         
         with col2:
             st.metric("Win Rate", f"{accuracy_metrics['win_rate']:.1%}")
@@ -1834,24 +1873,8 @@ def create_trading_history_dashboard(trading_engine):
             st.metric("Avg Win", f"${accuracy_metrics['average_win']:+,.2f}")
         
         with col4:
-            st.metric("Best Strategy", session_metrics.get('best_strategy', 'N/A'))
-            st.metric("Worst Strategy", session_metrics.get('worst_strategy', 'N/A'))
-        
-        # Session metrics
-        st.subheader("⏱️ Session Metrics")
-        sess_col1, sess_col2, sess_col3 = st.columns(3)
-        
-        with sess_col1:
-            st.metric("Total Runtime", f"{session_metrics['total_runtime']:.1f} hours")
-        
-        with sess_col2:
-            st.metric("Trades per Hour", f"{session_metrics['trades_per_hour']:.1f}")
-        
-        with sess_col3:
-            start_time = session_metrics['start_time']
-            if isinstance(start_time, str):
-                start_time = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-            st.metric("Session Start", start_time.strftime('%Y-%m-%d %H:%M'))
+            st.metric("Avg Loss", f"${accuracy_metrics['average_loss']:+,.2f}")
+            st.metric("Max Win Streak", accuracy_metrics['max_winning_streak'])
 
 def create_signal_generator(trading_engine):
     """Create signal generator dashboard"""
