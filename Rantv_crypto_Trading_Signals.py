@@ -1857,6 +1857,8 @@ app.layout = dbc.Container([
 # DASH CALLBACKS
 # =============================================
 
+# ... [Keep all the code above the handle_controls function exactly the same] ...
+
 @app.callback(
     [Output('control-feedback', 'children'),
      Output('session-data', 'data')],
@@ -1869,6 +1871,9 @@ app.layout = dbc.Container([
     prevent_initial_call=True
 )
 def handle_controls(start_clicks, stop_clicks, update_clicks, close_clicks, reset_clicks, new_clicks):
+    # Declare global at the BEGINNING of the function
+    global trading_engine
+    
     ctx = dash.callback_context
     if not ctx.triggered:
         raise PreventUpdate
@@ -1896,12 +1901,13 @@ def handle_controls(start_clicks, stop_clicks, update_clicks, close_clicks, rese
         return dbc.Alert("Session metrics reset!", color="info"), {}
     
     elif button_id == 'new-session-btn':
-        # Use global keyword to modify the global variable
-        global trading_engine
+        # Create new engine - now we can modify the global variable
         trading_engine = AlgorithmicTradingEngine(mode="paper", initial_capital=1000)
         return dbc.Alert("New trading session started!", color="success"), {}
     
     raise PreventUpdate
+
+# ... [Keep all the rest of the code exactly the same] ...
 
 @app.callback(
     [Output('total-value', 'children'),
@@ -2457,3 +2463,4 @@ def handle_refresh(refresh_clicks):
 
 if __name__ == '__main__':
     app.run_server(debug=True, port=8050)
+
