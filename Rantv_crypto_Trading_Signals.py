@@ -12,7 +12,7 @@ import streamlit as st
 import yfinance as yf
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
-from streamlit_autorefresh import st_autorefresh
+# Removed problematic import: from streamlit_autorefresh import st_autorefresh
 import warnings
 import hashlib
 import json
@@ -37,8 +37,8 @@ st.set_page_config(
 
 UTC_TZ = pytz.timezone("UTC")
 
-# Trading Parameters
-INITIAL_CAPITAL = 100000.0
+# Trading Parameters - CHANGED FROM 100000 TO 1000
+INITIAL_CAPITAL = 1000.0
 TRADE_ALLOCATION = 0.15
 MAX_DAILY_TRADES = 15
 MAX_POSITIONS = 10
@@ -428,8 +428,8 @@ class BaseStrategy:
         rs = gain / loss.replace(0, np.nan)
         indicators['rsi'] = 100 - (100 / (1 + rs)).iloc[-1]
         
-        # MACD
-        indicators['macd'] = indicators['ema_12'] if 'ema_12' in indicators else indicators['ema_8']
+        # MACD (fixed: using EMA_8 instead of EMA_12 which doesn't exist)
+        indicators['macd'] = indicators['ema_8']
         indicators['macd_signal'] = data['Close'].ewm(span=9).mean().iloc[-1]
         
         # Bollinger Bands
@@ -868,6 +868,11 @@ class RiskManager:
         if len(current_positions) >= MAX_POSITIONS:
             return False, "Maximum positions reached"
         
+        # Check for duplicate trades (prevent duplicate positions on same symbol)
+        for pos in current_positions.values():
+            if pos['symbol'] == signal.get('symbol'):
+                return False, "Duplicate position on same symbol"
+        
         return True, "Signal validated"
     
     def update_daily_loss(self, pnl):
@@ -937,6 +942,10 @@ class AlgorithmicTradingEngine:
             'best_strategy': None,
             'worst_strategy': None
         }
+        
+        # Track recent trades to prevent duplicates
+        self.recent_trades = []
+        self.max_recent_trades = 10
         
         # Start trading thread
         self.trading_active = False
@@ -1109,11 +1118,29 @@ class AlgorithmicTradingEngine:
             if quantity <= 0:
                 return False, "Invalid position size"
             
+            # Check for duplicate trades (recent trades)
+            recent_trades_on_symbol = [t for t in self.recent_trades if t['symbol'] == symbol]
+            if len(recent_trades_on_symbol) > 0:
+                return False, "Duplicate trade on same symbol recently"
+            
             # Get current price
             current_price = self._get_current_price(symbol)
             
             # Execute paper trade
-            return self._execute_paper_trade(signal, quantity, current_price)
+            success, message = self._execute_paper_trade(signal, quantity, current_price)
+            
+            if success:
+                # Add to recent trades
+                self.recent_trades.append({
+                    'symbol': symbol,
+                    'time': datetime.now(),
+                    'action': action
+                })
+                # Keep only recent trades
+                if len(self.recent_trades) > self.max_recent_trades:
+                    self.recent_trades.pop(0)
+            
+            return success, message
                 
         except Exception as e:
             return False, f"Trade execution failed: {str(e)}"
@@ -1380,6 +1407,7 @@ class AlgorithmicTradingEngine:
     def reset_daily_metrics(self):
         """Reset daily metrics"""
         self.risk_manager.reset_daily_metrics()
+        self.recent_trades = []
 
 # =============================================
 # STREAMLIT UI COMPONENTS
@@ -1391,6 +1419,7 @@ def create_header():
     <div style="text-align: center; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 10px; margin-bottom: 20px;">
         <h1 style="color: white; margin: 0;">🤖 RANTV ALGORITHMIC TRADING SYSTEM</h1>
         <p style="color: rgba(255,255,255,0.9); margin: 5px 0 0 0;">Smart Money Concept & Multi-Strategy Trading with Accuracy Tracking</p>
+        <p style="color: rgba(255,255,255,0.7); margin: 5px 0 0 0; font-size: 0.9em;">Capital: $1,000 | No Duplicate Trades</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1867,10 +1896,10 @@ def main():
     
     # Initialize session state
     if 'trading_engine' not in st.session_state:
-        st.session_state.trading_engine = AlgorithmicTradingEngine(mode="paper")
+        st.session_state.trading_engine = AlgorithmicTradingEngine(mode="paper", initial_capital=INITIAL_CAPITAL)
     
-    # Auto-refresh for real-time updates
-    st_autorefresh(interval=PRICE_REFRESH_MS, key="price_refresh")
+    # Removed auto-refresh due to import issue
+    # Instead, add a manual refresh button
     
     # Create header
     create_header()
@@ -1886,7 +1915,7 @@ def main():
             "Initial Capital ($)",
             min_value=1000,
             max_value=1000000,
-            value=100000,
+            value=1000,
             step=1000
         )
         
@@ -1902,7 +1931,7 @@ def main():
         # System controls
         st.subheader("🔄 System Controls")
         
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         
         with col1:
             if st.button("New Session", use_container_width=True):
@@ -1911,6 +1940,10 @@ def main():
                 st.rerun()
         
         with col2:
+            if st.button("Refresh", use_container_width=True, type="secondary"):
+                st.rerun()
+        
+        with col3:
             if st.button("Export Data", use_container_width=True, type="secondary"):
                 trading_engine = st.session_state.trading_engine
                 if trading_engine.trade_history:
@@ -1929,6 +1962,7 @@ def main():
         status_color = "🟢" if trading_engine.trading_active else "🔴"
         st.markdown(f"**System Status:** {status_color} {'Running' if trading_engine.trading_active else 'Stopped'}")
         st.markdown(f"**Mode:** Paper Trading")
+        st.markdown(f"**Capital:** ${trading_engine.initial_capital:,.2f}")
         st.markdown(f"**Strategies Active:** {len(trading_engine.strategies)}")
         st.markdown(f"**Last Update:** {datetime.now().strftime('%H:%M:%S')}")
     
@@ -2048,6 +2082,7 @@ def main():
     <div style="text-align: center; color: #666; font-size: 0.9em;">
     <p><strong>RANTV Algorithmic Trading System v5.0</strong> | Smart Money Concept | Multi-Strategy | Accuracy Tracking</p>
     <p>⚠️ This is for educational and paper trading purposes only. All trades are simulated.</p>
+    <p>💰 Capital: $1,000 | ⚠️ No Duplicate Trades</p>
     </div>
     """, unsafe_allow_html=True)
 
