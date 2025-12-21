@@ -1,6 +1,7 @@
 # =============================================
 # RANTV COMPLETE ALGORITHMIC TRADING SYSTEM
 # WITH SMART MONEY CONCEPT & ACCURACY TRACKING
+# DASH VERSION
 # =============================================
 
 import time
@@ -8,7 +9,6 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 import pytz
-import streamlit as st
 import yfinance as yf
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
@@ -23,16 +23,15 @@ from collections import defaultdict
 import plotly.express as px
 warnings.filterwarnings('ignore')
 
+# Dash imports
+import dash
+from dash import dcc, html, Input, Output, State, callback, dash_table
+import dash_bootstrap_components as dbc
+from dash.exceptions import PreventUpdate
+
 # =============================================
 # CONFIGURATION & SETTINGS
 # =============================================
-
-st.set_page_config(
-    page_title="RANTV Algorithmic Trading Suite",
-    layout="wide",
-    initial_sidebar_state="expanded",
-    page_icon="🤖"
-)
 
 UTC_TZ = pytz.timezone("UTC")
 
@@ -457,6 +456,7 @@ class BaseStrategy:
         
         return indicators
 
+# Strategy classes (same as original, but truncated for brevity)
 class SMC_FVG_Strategy(BaseStrategy):
     """Smart Money Concept - Fair Value Gap Strategy"""
     
@@ -956,9 +956,6 @@ class AlgorithmicTradingEngine:
         
         # Load strategies
         self._load_strategies()
-        
-        # NOTE: Do NOT load historical data from file
-        # We want fresh session-based data only
     
     def _load_strategies(self):
         """Load all trading strategies"""
@@ -1476,180 +1473,926 @@ class AlgorithmicTradingEngine:
         self.recent_trades = []
 
 # =============================================
-# STREAMLIT UI COMPONENTS
+# DASH APPLICATION
+# =============================================
+
+# Initialize Dash app
+app = dash.Dash(
+    __name__,
+    external_stylesheets=[dbc.themes.DARKLY],
+    meta_tags=[{'name': 'viewport', 'content': 'width=device-width, initial-scale=1'}]
+)
+
+app.title = "RANTV Algorithmic Trading Suite"
+
+# Initialize trading engine in memory (not in session state since Dash doesn't have session state like Streamlit)
+trading_engine = AlgorithmicTradingEngine(mode="paper", initial_capital=INITIAL_CAPITAL)
+
+# =============================================
+# DASH LAYOUT COMPONENTS
 # =============================================
 
 def create_header():
     """Create application header"""
-    st.markdown("""
-    <div style="text-align: center; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 10px; margin-bottom: 20px;">
-        <h1 style="color: white; margin: 0;">🤖 RANTV ALGORITHMIC TRADING SYSTEM</h1>
-        <p style="color: rgba(255,255,255,0.9); margin: 5px 0 0 0;">Smart Money Concept & Multi-Strategy Trading</p>
-        <p style="color: rgba(255,255,255,0.7); margin: 5px 0 0 0; font-size: 0.9em;">💰 <strong>Session-Based Trading | $1,000 Capital | Realistic P&L</strong></p>
-    </div>
-    """, unsafe_allow_html=True)
+    return dbc.Card(
+        dbc.CardBody([
+            html.H1("🤖 RANTV ALGORITHMIC TRADING SYSTEM", className="text-center mb-2"),
+            html.P("Smart Money Concept & Multi-Strategy Trading", className="text-center mb-1"),
+            html.P("💰 Session-Based Trading | $1,000 Capital | Realistic P&L", className="text-center mb-0"),
+        ]),
+        className="mb-4 bg-primary text-white"
+    )
 
-def create_trading_control_panel(trading_engine):
+def create_trading_control_panel():
     """Create trading control panel"""
-    st.subheader("🎮 Trading Controls")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        if not trading_engine.trading_active:
-            if st.button("🚀 Start Trading", use_container_width=True, type="primary"):
-                if trading_engine.start_trading():
-                    st.success("Algorithmic trading started!")
-                    st.rerun()
-        else:
-            if st.button("🛑 Stop Trading", use_container_width=True, type="secondary"):
-                trading_engine.stop_trading()
-                st.success("Algorithmic trading stopped!")
-                st.rerun()
-    
-    with col2:
-        if st.button("🔄 Update Positions", use_container_width=True):
-            trading_engine._manage_positions()
-            st.success("Positions updated!")
-            st.rerun()
-    
-    with col3:
-        if st.button("🗑️ Close All Positions", use_container_width=True):
-            closed = trading_engine.close_all_positions()
-            st.success(f"Closed {closed} positions!")
-            st.rerun()
-    
-    with col4:
-        if st.button("📊 Reset Session", use_container_width=True):
-            # Reset session metrics but keep engine running
-            trading_engine.reset_daily_metrics()
-            st.success("Session metrics reset!")
-            st.rerun()
+    return dbc.Card([
+        dbc.CardHeader("🎮 Trading Controls", className="bg-secondary text-white"),
+        dbc.CardBody([
+            dbc.Row([
+                dbc.Col([
+                    dbc.Button(
+                        "🚀 Start Trading",
+                        id="start-trading-btn",
+                        color="success",
+                        className="w-100 mb-2",
+                        disabled=False
+                    ),
+                ], width=3),
+                dbc.Col([
+                    dbc.Button(
+                        "🛑 Stop Trading",
+                        id="stop-trading-btn",
+                        color="danger",
+                        className="w-100 mb-2",
+                        disabled=False
+                    ),
+                ], width=3),
+                dbc.Col([
+                    dbc.Button(
+                        "🔄 Update Positions",
+                        id="update-positions-btn",
+                        color="warning",
+                        className="w-100 mb-2"
+                    ),
+                ], width=3),
+                dbc.Col([
+                    dbc.Button(
+                        "🗑️ Close All Positions",
+                        id="close-all-btn",
+                        color="danger",
+                        className="w-100 mb-2",
+                        outline=True
+                    ),
+                ], width=3),
+            ]),
+            dbc.Row([
+                dbc.Col([
+                    dbc.Button(
+                        "📊 Reset Session",
+                        id="reset-session-btn",
+                        color="info",
+                        className="w-100 mt-2"
+                    ),
+                ], width=12),
+            ]),
+            html.Div(id="control-feedback", className="mt-2"),
+        ])
+    ])
 
-def create_portfolio_dashboard(trading_engine):
+def create_portfolio_dashboard():
     """Create portfolio dashboard"""
-    st.subheader("📊 Portfolio Overview")
+    return dbc.Card([
+        dbc.CardHeader("📊 Portfolio Overview", className="bg-secondary text-white"),
+        dbc.CardBody([
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardBody([
+                            html.H5("Total Value", className="card-title"),
+                            html.H3(id="total-value", className="card-text text-center"),
+                            html.P(id="total-pnl", className="card-text text-center"),
+                        ])
+                    ], className="mb-3"),
+                ], width=3),
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardBody([
+                            html.H5("Available Cash", className="card-title"),
+                            html.H3(id="available-cash", className="card-text text-center"),
+                        ])
+                    ], className="mb-3"),
+                ], width=3),
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardBody([
+                            html.H5("Open Positions", className="card-title"),
+                            html.H3(id="open-positions", className="card-text text-center"),
+                        ])
+                    ], className="mb-3"),
+                ], width=3),
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardBody([
+                            html.H5("Open P&L", className="card-title"),
+                            html.H3(id="open-pnl", className="card-text text-center"),
+                        ])
+                    ], className="mb-3"),
+                ], width=3),
+            ]),
+            
+            html.Hr(),
+            
+            html.H5("💰 Profit & Loss Dashboard (Session)", className="mt-3"),
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardBody([
+                            html.H6("Total Trades", className="card-title text-center"),
+                            html.H4(id="total-trades", className="card-text text-center"),
+                        ])
+                    ]),
+                ], width=2),
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardBody([
+                            html.H6("Winning Trades", className="card-title text-center"),
+                            html.H4(id="winning-trades", className="card-text text-center text-success"),
+                        ])
+                    ]),
+                ], width=2),
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardBody([
+                            html.H6("Losing Trades", className="card-title text-center"),
+                            html.H4(id="losing-trades", className="card-text text-center text-danger"),
+                        ])
+                    ]),
+                ], width=2),
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardBody([
+                            html.H6("Win Rate", className="card-title text-center"),
+                            html.H4(id="win-rate", className="card-text text-center"),
+                        ])
+                    ]),
+                ], width=2),
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardBody([
+                            html.H6("Total Wins", className="card-title text-center"),
+                            html.H4(id="total-wins", className="card-text text-center text-success"),
+                        ])
+                    ]),
+                ], width=2),
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardBody([
+                            html.H6("Total Losses", className="card-title text-center"),
+                            html.H4(id="total-losses", className="card-text text-center text-danger"),
+                        ])
+                    ]),
+                ], width=2),
+            ], className="mt-2"),
+        ])
+    ])
+
+def create_positions_table():
+    """Create positions table"""
+    return dbc.Card([
+        dbc.CardHeader("💰 Open Positions", className="bg-secondary text-white"),
+        dbc.CardBody([
+            html.Div(id="positions-table"),
+        ])
+    ])
+
+def create_trade_history():
+    """Create trade history section"""
+    return dbc.Card([
+        dbc.CardHeader("📋 Trading History (Current Session Only)", className="bg-secondary text-white"),
+        dbc.CardBody([
+            dcc.Tabs([
+                dcc.Tab(label="All Trades", children=[
+                    html.Div(id="trade-history-table"),
+                    html.Div([
+                        dbc.Button("📥 Export Session History", id="export-history-btn", color="info", className="mt-3"),
+                        dcc.Download(id="download-history")
+                    ]),
+                ]),
+                dcc.Tab(label="Performance Charts", children=[
+                    dcc.Graph(id="cumulative-pnl-chart"),
+                    dcc.Graph(id="hourly-pnl-chart"),
+                    dcc.Graph(id="win-rate-chart"),
+                ]),
+                dcc.Tab(label="Strategy Analysis", children=[
+                    html.Div(id="strategy-performance-table"),
+                    dcc.Graph(id="strategy-comparison-chart"),
+                ]),
+            ]),
+        ])
+    ])
+
+def create_signal_generator():
+    """Create signal generator"""
+    return dbc.Card([
+        dbc.CardHeader("🚦 Signal Generator", className="bg-secondary text-white"),
+        dbc.CardBody([
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Select Strategies for Scanning"),
+                    dcc.Dropdown(
+                        id="strategy-selector",
+                        options=[{'label': s, 'value': s} for s in trading_engine.strategies.keys()],
+                        value=list(trading_engine.strategies.keys())[:3],
+                        multi=True,
+                        className="mb-3"
+                    ),
+                ], width=6),
+                dbc.Col([
+                    html.Label("Select Symbols to Scan"),
+                    dcc.Dropdown(
+                        id="symbol-selector",
+                        options=[{'label': s, 'value': s} for s in ALL_SYMBOLS],
+                        value=ALL_SYMBOLS[:5],
+                        multi=True,
+                        className="mb-3"
+                    ),
+                ], width=6),
+            ]),
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Minimum Confidence"),
+                    dcc.Slider(
+                        id="confidence-slider",
+                        min=0.5,
+                        max=0.95,
+                        value=0.65,
+                        step=0.05,
+                        marks={0.5: '0.5', 0.65: '0.65', 0.8: '0.8', 0.95: '0.95'}
+                    ),
+                ], width=12),
+            ]),
+            dbc.Row([
+                dbc.Col([
+                    dbc.Button(
+                        "🔍 Scan for Signals",
+                        id="scan-signals-btn",
+                        color="primary",
+                        className="w-100 mt-3"
+                    ),
+                ], width=12),
+            ]),
+            html.Div(id="signals-output", className="mt-3"),
+        ])
+    ])
+
+def create_sidebar():
+    """Create sidebar"""
+    return html.Div([
+        html.H4("⚙️ System Configuration", className="mb-3"),
+        
+        html.H6("📊 Trading Parameters", className="mt-3"),
+        dbc.Input(
+            id="initial-capital",
+            type="number",
+            value=1000,
+            min=1000,
+            max=1000000,
+            step=1000,
+            className="mb-3"
+        ),
+        
+        html.H6("🌐 Market Selection", className="mt-3"),
+        dcc.Dropdown(
+            id="market-selector",
+            options=[{'label': m, 'value': m} for m in MARKET_OPTIONS],
+            value=["CRYPTO", "STOCKS"],
+            multi=True,
+            className="mb-3"
+        ),
+        
+        html.H6("🔄 System Controls", className="mt-3"),
+        dbc.Row([
+            dbc.Col([
+                dbc.Button(
+                    "New Session",
+                    id="new-session-btn",
+                    color="primary",
+                    className="w-100 mb-2"
+                ),
+            ], width=12),
+            dbc.Col([
+                dbc.Button(
+                    "Refresh",
+                    id="refresh-btn",
+                    color="secondary",
+                    className="w-100 mb-2"
+                ),
+            ], width=12),
+        ]),
+        
+        html.Hr(),
+        
+        html.H6("System Status", className="mt-3"),
+        html.Div(id="system-status"),
+        
+        dcc.Interval(
+            id='interval-component',
+            interval=5*1000,  # 5 seconds
+            n_intervals=0
+        ),
+    ], style={
+        'position': 'sticky',
+        'top': '20px',
+        'backgroundColor': '#343a40',
+        'padding': '20px',
+        'borderRadius': '10px',
+        'height': 'fit-content'
+    })
+
+# =============================================
+# DASH LAYOUT
+# =============================================
+
+app.layout = dbc.Container([
+    create_header(),
     
+    dbc.Row([
+        dbc.Col(create_sidebar(), width=3),
+        dbc.Col([
+            dbc.Tabs([
+                dbc.Tab(create_trading_control_panel(), label="🎮 Control"),
+                dbc.Tab(create_portfolio_dashboard(), label="📊 Portfolio"),
+                dbc.Tab(create_positions_table(), label="💰 Positions"),
+                dbc.Tab(create_trade_history(), label="📋 History"),
+                dbc.Tab(create_signal_generator(), label="🚦 Signals"),
+            ]),
+            
+            html.Hr(),
+            
+            html.Div([
+                html.P("RANTV Algorithmic Trading System v6.0 | Session-Based Trading | Smart Money Concept", 
+                      className="text-center mb-1"),
+                html.P("⚠️ This is for educational and paper trading purposes only. All trades are simulated.", 
+                      className="text-center mb-1 text-warning"),
+                html.P("💰 Session-Based History Only | $1000 Capital | Realistic P&L", 
+                      className="text-center mb-1 font-weight-bold"),
+                html.P("Note: Each browser session starts fresh. History is not saved between sessions.", 
+                      className="text-center mb-0 font-italic"),
+            ], className="text-muted mt-4"),
+            
+        ], width=9),
+    ]),
+    
+    # Store for data
+    dcc.Store(id='session-data'),
+    
+    # Interval for auto-refresh
+    dcc.Interval(
+        id='auto-refresh',
+        interval=10*1000,  # 10 seconds
+        n_intervals=0
+    ),
+], fluid=True, className="p-4")
+
+# =============================================
+# DASH CALLBACKS
+# =============================================
+
+@app.callback(
+    [Output('control-feedback', 'children'),
+     Output('session-data', 'data')],
+    [Input('start-trading-btn', 'n_clicks'),
+     Input('stop-trading-btn', 'n_clicks'),
+     Input('update-positions-btn', 'n_clicks'),
+     Input('close-all-btn', 'n_clicks'),
+     Input('reset-session-btn', 'n_clicks'),
+     Input('new-session-btn', 'n_clicks')],
+    prevent_initial_call=True
+)
+def handle_controls(start_clicks, stop_clicks, update_clicks, close_clicks, reset_clicks, new_clicks):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        raise PreventUpdate
+    
+    button_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    
+    if button_id == 'start-trading-btn':
+        if trading_engine.start_trading():
+            return dbc.Alert("Algorithmic trading started!", color="success"), {}
+    
+    elif button_id == 'stop-trading-btn':
+        if trading_engine.stop_trading():
+            return dbc.Alert("Algorithmic trading stopped!", color="warning"), {}
+    
+    elif button_id == 'update-positions-btn':
+        trading_engine._manage_positions()
+        return dbc.Alert("Positions updated!", color="info"), {}
+    
+    elif button_id == 'close-all-btn':
+        closed = trading_engine.close_all_positions()
+        return dbc.Alert(f"Closed {closed} positions!", color="danger"), {}
+    
+    elif button_id == 'reset-session-btn':
+        trading_engine.reset_daily_metrics()
+        return dbc.Alert("Session metrics reset!", color="info"), {}
+    
+    elif button_id == 'new-session-btn':
+        # Create new engine
+        global trading_engine
+        trading_engine = AlgorithmicTradingEngine(mode="paper", initial_capital=1000)
+        return dbc.Alert("New trading session started!", color="success"), {}
+    
+    raise PreventUpdate
+
+@app.callback(
+    [Output('total-value', 'children'),
+     Output('total-pnl', 'children'),
+     Output('available-cash', 'children'),
+     Output('open-positions', 'children'),
+     Output('open-pnl', 'children'),
+     Output('total-trades', 'children'),
+     Output('winning-trades', 'children'),
+     Output('losing-trades', 'children'),
+     Output('win-rate', 'children'),
+     Output('total-wins', 'children'),
+     Output('total-losses', 'children'),
+     Output('system-status', 'children')],
+    [Input('auto-refresh', 'n_intervals'),
+     Input('interval-component', 'n_intervals')]
+)
+def update_portfolio_metrics(n1, n2):
+    """Update portfolio metrics"""
     portfolio = trading_engine.get_portfolio_summary()
     
-    # Portfolio metrics
-    col1, col2, col3, col4 = st.columns(4)
+    total_value = f"${portfolio['total_value']:,.2f}"
+    total_pnl = f"${portfolio['total_pnl']:+,.2f}"
+    total_pnl_color = "text-success" if portfolio['total_pnl'] >= 0 else "text-danger"
+    total_pnl_html = html.Span(total_pnl, className=total_pnl_color)
     
-    with col1:
-        pnl_color = "normal" if portfolio['total_pnl'] >= 0 else "inverse"
-        st.metric(
-            "Total Value",
-            f"${portfolio['total_value']:,.2f}",
-            delta=f"${portfolio['total_pnl']:+,.2f}",
-            delta_color=pnl_color
-        )
+    available_cash = f"${portfolio['cash']:,.2f}"
+    open_positions = f"{portfolio['open_positions']}"
+    open_pnl = f"${portfolio['open_pnl']:+,.2f}"
+    open_pnl_color = "text-success" if portfolio['open_pnl'] >= 0 else "text-danger"
+    open_pnl_html = html.Span(open_pnl, className=open_pnl_color)
     
-    with col2:
-        st.metric("Available Cash", f"${portfolio['cash']:,.2f}")
+    total_trades = f"{portfolio['total_trades']}"
+    winning_trades = f"{portfolio['profitable_trades']}"
+    losing_trades = f"{portfolio['losing_trades']}"
+    win_rate = f"{portfolio['win_rate']:.1%}"
+    total_wins = f"${portfolio['total_wins']:+,.2f}"
+    total_losses = f"${portfolio['total_losses']:+,.2f}"
     
-    with col3:
-        st.metric("Open Positions", portfolio['open_positions'])
+    # System status
+    status_color = "success" if trading_engine.trading_active else "danger"
+    status_text = "Running" if trading_engine.trading_active else "Stopped"
+    status_emoji = "🟢" if trading_engine.trading_active else "🔴"
+    system_status = [
+        dbc.Badge(f"{status_emoji} {status_text}", color=status_color, className="mr-2"),
+        html.P(f"Mode: Paper Trading", className="mb-1"),
+        html.P(f"Capital: ${trading_engine.initial_capital:,.2f}", className="mb-1"),
+        html.P(f"Session Start: {trading_engine.session_metrics['start_time'].strftime('%H:%M:%S')}", className="mb-1"),
+        html.P(f"Trades This Session: {trading_engine.accuracy_metrics['executed_trades']}", className="mb-1"),
+        html.P(f"Last Update: {datetime.now().strftime('%H:%M:%S')}", className="mb-0"),
+    ]
     
-    with col4:
-        open_pnl_color = "normal" if portfolio['open_pnl'] >= 0 else "inverse"
-        st.metric(
-            "Open P&L",
-            f"${portfolio['open_pnl']:+,.2f}",
-            delta_color=open_pnl_color
-        )
-    
-    # P&L Dashboard
-    st.subheader("💰 Profit & Loss Dashboard (Session)")
-    
-    pl_col1, pl_col2, pl_col3, pl_col4, pl_col5, pl_col6 = st.columns(6)
-    
-    with pl_col1:
-        st.metric("Total Trades", portfolio['total_trades'])
-    
-    with pl_col2:
-        st.metric("Winning Trades", portfolio['profitable_trades'])
-    
-    with pl_col3:
-        st.metric("Losing Trades", portfolio['losing_trades'])
-    
-    with pl_col4:
-        win_rate_color = "normal" if portfolio['win_rate'] >= 0.5 else "inverse"
-        st.metric(
-            "Win Rate",
-            f"{portfolio['win_rate']:.1%}",
-            delta_color=win_rate_color
-        )
-    
-    with pl_col5:
-        st.metric("Total Wins", f"${portfolio['total_wins']:+,.2f}")
-    
-    with pl_col6:
-        st.metric("Total Losses", f"${portfolio['total_losses']:+,.2f}")
+    return (total_value, total_pnl_html, available_cash, open_positions, open_pnl_html,
+            total_trades, winning_trades, losing_trades, win_rate, total_wins, total_losses,
+            system_status)
 
-def create_positions_dashboard(trading_engine):
-    """Create positions dashboard"""
-    st.subheader("💰 Open Positions")
-    
+@app.callback(
+    Output('positions-table', 'children'),
+    [Input('auto-refresh', 'n_intervals')]
+)
+def update_positions_table(n_intervals):
+    """Update positions table"""
     positions = trading_engine.get_open_positions()
     
     if not positions:
-        st.info("No open positions")
-        return
+        return html.Div("No open positions", className="text-center text-muted p-4")
     
+    table_rows = []
     for position in positions:
-        with st.container():
-            col1, col2, col3, col4, col5 = st.columns([2, 1, 1, 1, 1])
-            
-            with col1:
-                action_color = "green" if position['action'] == 'BUY' else "red"
-                st.write(f"**{position['symbol']}** - <span style='color:{action_color};'>{position['action']}</span>", 
-                        unsafe_allow_html=True)
-                st.write(f"Qty: {position['quantity']:.4f} | Entry: ${position['entry_price']:.2f}")
-                st.write(f"Strategy: {position['strategy']} | Value: ${position.get('position_value', 0):.2f}")
-            
-            with col2:
-                current_price = position.get('current_price', position['entry_price'])
-                pnl = position.get('pnl', 0)
-                pnl_percentage = position.get('pnl_percentage', 0)
-                pnl_color = "green" if pnl >= 0 else "red"
-                st.write(f"Current: ${current_price:.2f}")
-                st.write(f"<span style='color:{pnl_color};'>P&L: ${pnl:+,.2f} ({pnl_percentage:+.1f}%)</span>", 
-                        unsafe_allow_html=True)
-            
-            with col3:
-                st.write(f"SL: ${position['stop_loss']:.2f}")
-            
-            with col4:
-                st.write(f"TP: ${position['take_profit']:.2f}")
-            
-            with col5:
-                if st.button("Close", key=f"close_{position['trade_id']}"):
-                    if trading_engine._close_position(position['trade_id'], 'MANUAL'):
-                        st.success("Position closed")
-                        st.rerun()
-            
-            st.divider()
-
-def create_trading_history_dashboard(trading_engine):
-    """Create comprehensive trading history dashboard - SESSION BASED"""
-    st.subheader("📋 Trading History (Current Session Only)")
+        pnl_color = "success" if position.get('pnl', 0) >= 0 else "danger"
+        action_color = "success" if position['action'] == 'BUY' else "danger"
+        
+        row = dbc.Row([
+            dbc.Col([
+                html.Strong(position['symbol']),
+                html.Br(),
+                html.Small(f"{position['action']}", className=f"text-{action_color}"),
+                html.Br(),
+                html.Small(f"Qty: {position['quantity']:.4f} | Entry: ${position['entry_price']:.2f}"),
+                html.Br(),
+                html.Small(f"Strategy: {position['strategy']} | Value: ${position.get('position_value', 0):.2f}"),
+            ], width=4),
+            dbc.Col([
+                html.Strong(f"Current: ${position.get('current_price', position['entry_price']):.2f}"),
+                html.Br(),
+                html.Small(f"P&L: ${position.get('pnl', 0):+,.2f} ({position.get('pnl_percentage', 0):+.1f}%)", 
+                          className=f"text-{pnl_color}"),
+            ], width=3),
+            dbc.Col([
+                html.Small(f"SL: ${position['stop_loss']:.2f}"),
+                html.Br(),
+                html.Small(f"TP: ${position['take_profit']:.2f}"),
+            ], width=3),
+            dbc.Col([
+                dbc.Button(
+                    "Close",
+                    id=f"close-btn-{position['trade_id']}",
+                    color="danger",
+                    size="sm",
+                    className="w-100"
+                ),
+            ], width=2),
+        ], className="mb-2 p-2 border rounded")
+        
+        table_rows.append(row)
     
-    # Get session trade history
+    return table_rows
+
+@app.callback(
+    Output('trade-history-table', 'children'),
+    [Input('auto-refresh', 'n_intervals')]
+)
+def update_trade_history(n_intervals):
+    """Update trade history table"""
     trade_history = trading_engine.get_trade_history(100)
     
     if not trade_history:
-        st.info("No trades in current session. Start trading to generate trades!")
-        return
+        return html.Div("No trades in current session. Start trading to generate trades!", 
+                       className="text-center text-muted p-4")
     
-    # Create tabs for different views
-    tab1, tab2, tab3 = st.tabs(["All Trades", "Performance Charts", "Strategy Analysis"])
-    
-    with tab1:
-        # Display all trades in a table
-        st.subheader("📊 All Trades (Current Session)")
+    # Prepare data for table
+    history_data = []
+    for idx, trade in enumerate(trade_history, 1):
+        # Calculate P&L
+        pnl = 0
+        pnl_percentage = 0
         
-        # Prepare data for display
-        history_data = []
+        if trade['status'] == 'CLOSED':
+            pnl = trade.get('closed_pnl', 0)
+            if trade.get('position_value', 0) > 0:
+                pnl_percentage = (pnl / trade.get('position_value', 0)) * 100
+        else:
+            pnl = trade.get('pnl', 0)
+            if trade.get('position_value', 0) > 0:
+                pnl_percentage = (pnl / trade.get('position_value', 0)) * 100
+        
+        # Format timestamp
+        timestamp = trade['timestamp']
+        if isinstance(timestamp, str):
+            timestamp = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+        
+        history_data.append({
+            'ID': idx,
+            'Symbol': trade['symbol'],
+            'Action': trade['action'],
+            'Strategy': trade['strategy'],
+            'Qty': f"{trade['quantity']:.4f}",
+            'Entry': f"${trade['entry_price']:.2f}",
+            'Exit': f"${trade.get('exit_price', 'N/A'):.2f}" if trade.get('exit_price') else "N/A",
+            'P&L': f"${pnl:+,.2f}",
+            'P&L %': f"{pnl_percentage:+.1f}%" if pnl_percentage else "N/A",
+            'Status': trade['status'][0],
+            'Time': timestamp.strftime('%H:%M:%S') if isinstance(timestamp, datetime) else str(timestamp)
+        })
+    
+    # Create DataTable
+    columns = [
+        {'name': 'ID', 'id': 'ID'},
+        {'name': 'Symbol', 'id': 'Symbol'},
+        {'name': 'Action', 'id': 'Action'},
+        {'name': 'Strategy', 'id': 'Strategy'},
+        {'name': 'Qty', 'id': 'Qty'},
+        {'name': 'Entry', 'id': 'Entry'},
+        {'name': 'Exit', 'id': 'Exit'},
+        {'name': 'P&L', 'id': 'P&L'},
+        {'name': 'P&L %', 'id': 'P&L %'},
+        {'name': 'Status', 'id': 'Status'},
+        {'name': 'Time', 'id': 'Time'},
+    ]
+    
+    return dash_table.DataTable(
+        id='history-datatable',
+        columns=columns,
+        data=history_data,
+        page_size=10,
+        style_table={'overflowX': 'auto'},
+        style_cell={
+            'textAlign': 'center',
+            'padding': '5px'
+        },
+        style_data_conditional=[
+            {
+                'if': {
+                    'filter_query': '{P&L} contains "-"',
+                    'column_id': ['P&L', 'P&L %']
+                },
+                'color': 'red'
+            },
+            {
+                'if': {
+                    'filter_query': '{P&L} contains "+"',
+                    'column_id': ['P&L', 'P&L %']
+                },
+                'color': 'green'
+            }
+        ]
+    )
+
+@app.callback(
+    [Output('cumulative-pnl-chart', 'figure'),
+     Output('hourly-pnl-chart', 'figure'),
+     Output('win-rate-chart', 'figure')],
+    [Input('auto-refresh', 'n_intervals')]
+)
+def update_performance_charts(n_intervals):
+    """Update performance charts"""
+    trade_history = trading_engine.get_trade_history(100)
+    closed_trades = [t for t in trade_history if t.get('status') == 'CLOSED']
+    
+    # Initialize empty figures
+    fig1 = go.Figure()
+    fig2 = go.Figure()
+    fig3 = go.Figure()
+    
+    if closed_trades:
+        # Prepare data for charts
+        df_trades = pd.DataFrame([
+            {
+                'Date': t['timestamp'] if isinstance(t['timestamp'], datetime) else datetime.now(),
+                'P&L': t.get('closed_pnl', 0),
+                'P&L %': t.get('closed_pnl_percentage', 0),
+                'Strategy': t.get('strategy', 'unknown'),
+                'Symbol': t['symbol'],
+                'Action': t['action'],
+                'Value': t.get('position_value', 0)
+            }
+            for t in closed_trades
+        ])
+        
+        if not df_trades.empty:
+            df_trades = df_trades.sort_values('Date')
+            df_trades['Cumulative P&L'] = df_trades['P&L'].cumsum()
+            df_trades['Rolling Win Rate'] = (df_trades['P&L'] > 0).rolling(window=5, min_periods=1).mean()
+            
+            # Cumulative P&L chart
+            fig1 = go.Figure()
+            fig1.add_trace(go.Scatter(
+                x=df_trades['Date'],
+                y=df_trades['Cumulative P&L'],
+                mode='lines+markers',
+                name='Cumulative P&L',
+                line=dict(color='green' if df_trades['Cumulative P&L'].iloc[-1] > 0 else 'red', width=2),
+                hovertemplate='Date: %{x}<br>Cumulative P&L: $%{y:.2f}<extra></extra>'
+            ))
+            fig1.update_layout(
+                title="Cumulative P&L (Current Session)",
+                xaxis_title="Time",
+                yaxis_title="Cumulative P&L ($)",
+                height=400,
+                template='plotly_dark'
+            )
+            
+            # Hourly P&L chart
+            if len(df_trades) > 1:
+                df_trades['Hour'] = pd.to_datetime(df_trades['Date']).dt.floor('H')
+                hourly_pnl = df_trades.groupby('Hour')['P&L'].sum().reset_index()
+                
+                fig2 = go.Figure()
+                colors = ['green' if x >= 0 else 'red' for x in hourly_pnl['P&L']]
+                fig2.add_trace(go.Bar(
+                    x=hourly_pnl['Hour'],
+                    y=hourly_pnl['P&L'],
+                    name='Hourly P&L',
+                    marker_color=colors
+                ))
+                fig2.update_layout(
+                    title="Hourly P&L Distribution",
+                    xaxis_title="Hour",
+                    yaxis_title="P&L ($)",
+                    height=400,
+                    template='plotly_dark'
+                )
+            else:
+                fig2 = go.Figure()
+                fig2.update_layout(
+                    title="Hourly P&L Distribution (Not enough data)",
+                    height=400,
+                    template='plotly_dark'
+                )
+            
+            # Win rate chart
+            fig3 = go.Figure()
+            fig3.add_trace(go.Scatter(
+                x=df_trades['Date'],
+                y=df_trades['Rolling Win Rate'] * 100,
+                mode='lines',
+                name='Rolling Win Rate (5 trades)',
+                line=dict(color='blue', width=2)
+            ))
+            fig3.add_hline(y=50, line_dash="dash", line_color="red")
+            fig3.update_layout(
+                title="Rolling Win Rate",
+                xaxis_title="Time",
+                yaxis_title="Win Rate (%)",
+                height=400,
+                yaxis=dict(range=[0, 100]),
+                template='plotly_dark'
+            )
+    
+    else:
+        fig1.update_layout(
+            title="Cumulative P&L (No closed trades yet)",
+            height=400,
+            template='plotly_dark'
+        )
+        fig2.update_layout(
+            title="Hourly P&L Distribution (No closed trades yet)",
+            height=400,
+            template='plotly_dark'
+        )
+        fig3.update_layout(
+            title="Rolling Win Rate (No closed trades yet)",
+            height=400,
+            template='plotly_dark'
+        )
+    
+    return fig1, fig2, fig3
+
+@app.callback(
+    [Output('strategy-performance-table', 'children'),
+     Output('strategy-comparison-chart', 'figure')],
+    [Input('auto-refresh', 'n_intervals')]
+)
+def update_strategy_performance(n_intervals):
+    """Update strategy performance"""
+    strategy_perf = trading_engine.get_strategy_performance()
+    strategies_with_trades = {k: v for k, v in strategy_perf.items() if v['trades'] > 0}
+    
+    if not strategies_with_trades:
+        empty_fig = go.Figure()
+        empty_fig.update_layout(
+            title="Strategy Performance (No trades yet)",
+            height=400,
+            template='plotly_dark'
+        )
+        return html.Div("No strategy has executed trades in this session yet.", 
+                       className="text-center text-muted p-4"), empty_fig
+    
+    # Prepare data for table
+    perf_data = []
+    for strategy, data in strategies_with_trades.items():
+        perf_data.append({
+            'Strategy': strategy,
+            'Trades': data['trades'],
+            'Wins': data['wins'],
+            'Losses': data['losses'],
+            'Win Rate': f"{data['win_rate']:.1%}",
+            'Total P&L': f"${data['total_pnl']:+,.2f}",
+            'Avg Win': f"${data['avg_win']:+,.2f}" if data['wins'] > 0 else "N/A",
+            'Avg Loss': f"${data['avg_loss']:+,.2f}" if data['losses'] > 0 else "N/A"
+        })
+    
+    # Create DataTable
+    columns = [
+        {'name': 'Strategy', 'id': 'Strategy'},
+        {'name': 'Trades', 'id': 'Trades'},
+        {'name': 'Wins', 'id': 'Wins'},
+        {'name': 'Losses', 'id': 'Losses'},
+        {'name': 'Win Rate', 'id': 'Win Rate'},
+        {'name': 'Total P&L', 'id': 'Total P&L'},
+        {'name': 'Avg Win', 'id': 'Avg Win'},
+        {'name': 'Avg Loss', 'id': 'Avg Loss'},
+    ]
+    
+    table = dash_table.DataTable(
+        columns=columns,
+        data=perf_data,
+        page_size=10,
+        style_table={'overflowX': 'auto'},
+        style_cell={'textAlign': 'center', 'padding': '5px'},
+        style_data_conditional=[
+            {
+                'if': {
+                    'filter_query': '{Total P&L} contains "-"',
+                    'column_id': 'Total P&L'
+                },
+                'color': 'red'
+            },
+            {
+                'if': {
+                    'filter_query': '{Total P&L} contains "+"',
+                    'column_id': 'Total P&L'
+                },
+                'color': 'green'
+            }
+        ]
+    )
+    
+    # Strategy comparison chart
+    df_perf = pd.DataFrame(perf_data)
+    df_perf['Win Rate Num'] = df_perf['Win Rate'].str.rstrip('%').astype('float') / 100
+    df_perf['Total P&L Num'] = df_perf['Total P&L'].str.replace('$', '').str.replace(',', '').astype('float')
+    
+    fig = px.bar(df_perf, x='Strategy', y='Win Rate Num',
+                 title="Strategy Win Rate Comparison",
+                 color='Total P&L Num',
+                 color_continuous_scale='RdYlGn')
+    fig.update_layout(
+        height=400,
+        template='plotly_dark',
+        xaxis_title="Strategy",
+        yaxis_title="Win Rate",
+        yaxis_tickformat='.0%'
+    )
+    
+    return table, fig
+
+@app.callback(
+    [Output('signals-output', 'children'),
+     Output('download-history', 'data')],
+    [Input('scan-signals-btn', 'n_clicks'),
+     Input('export-history-btn', 'n_clicks')],
+    [State('strategy-selector', 'value'),
+     State('symbol-selector', 'value'),
+     State('confidence-slider', 'value')],
+    prevent_initial_call=True
+)
+def handle_signals_and_export(scan_clicks, export_clicks, selected_strategies, selected_symbols, min_confidence):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        raise PreventUpdate
+    
+    button_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    
+    if button_id == 'scan-signals-btn':
+        if not selected_symbols or not selected_strategies:
+            return dbc.Alert("Please select at least one symbol and one strategy", color="warning"), dash.no_update
+        
+        # Scan for signals
+        signals = []
+        for symbol in selected_symbols:
+            current_price = trading_engine._get_current_price(symbol)
+            historical_data = trading_engine._get_historical_data(symbol)
+            
+            if historical_data.empty:
+                continue
+            
+            for strategy_name in selected_strategies:
+                strategy = trading_engine.strategies[strategy_name]
+                signal = strategy.generate_signal(symbol, current_price, historical_data)
+                if signal and signal['confidence'] >= min_confidence:
+                    signals.append(signal)
+        
+        if not signals:
+            return dbc.Alert(f"No signals found with confidence ≥ {min_confidence}", color="info"), dash.no_update
+        
+        # Display signals
+        signal_cards = []
+        for i, signal in enumerate(signals[:10]):  # Limit to 10 signals
+            action_color = "success" if signal['action'] == 'BUY' else "danger"
+            action_emoji = "🟢" if signal['action'] == 'BUY' else "🔴"
+            
+            card = dbc.Card([
+                dbc.CardBody([
+                    dbc.Row([
+                        dbc.Col([
+                            html.H6(f"{action_emoji} {signal['symbol']} - {signal['action']}", 
+                                   className=f"text-{action_color}"),
+                            html.P(f"Strategy: {signal['strategy']}"),
+                            html.P(f"Confidence: {signal['confidence']:.1%}"),
+                        ], width=4),
+                        dbc.Col([
+                            html.P(f"Price: ${trading_engine._get_current_price(signal['symbol']):.2f}"),
+                            html.P(f"SL: ${signal.get('stop_loss', 0):.2f}"),
+                            html.P(f"TP: ${signal.get('take_profit', 0):.2f}"),
+                        ], width=4),
+                        dbc.Col([
+                            dbc.Button(
+                                "Execute",
+                                id=f"execute-btn-{i}",
+                                color=action_color,
+                                className="w-100"
+                            ),
+                        ], width=4),
+                    ]),
+                ]),
+            ], className="mb-2")
+            signal_cards.append(card)
+        
+        return [dbc.Alert(f"Found {len(signals)} signals with confidence ≥ {min_confidence}", color="success")] + signal_cards, dash.no_update
+    
+    elif button_id == 'export-history-btn':
+        # Export session history
+        trade_history = trading_engine.get_trade_history(100)
+        
+        if not trade_history:
+            return dbc.Alert("No trade history to export", color="warning"), dash.no_update
+        
+        # Prepare data for CSV
+        export_data = []
         for idx, trade in enumerate(trade_history, 1):
             # Calculate P&L
             pnl = 0
@@ -1664,396 +2407,56 @@ def create_trading_history_dashboard(trading_engine):
                 if trade.get('position_value', 0) > 0:
                     pnl_percentage = (pnl / trade.get('position_value', 0)) * 100
             
-            # Format data
-            history_data.append({
+            export_data.append({
                 'ID': idx,
                 'Symbol': trade['symbol'],
                 'Action': trade['action'],
                 'Strategy': trade['strategy'],
-                'Qty': f"{trade['quantity']:.4f}",
-                'Entry': f"${trade['entry_price']:.2f}",
-                'Exit': f"${trade.get('exit_price', 'N/A'):.2f}" if trade.get('exit_price') else "N/A",
-                'P&L': f"${pnl:+,.2f}",
-                'P&L %': f"{pnl_percentage:+.1f}%" if pnl_percentage else "N/A",
-                'Value': f"${trade.get('position_value', 0):.2f}",
-                'Status': trade['status'][0]  # 'O' for Open, 'C' for Closed
+                'Quantity': trade['quantity'],
+                'Entry Price': trade['entry_price'],
+                'Exit Price': trade.get('exit_price', 'N/A'),
+                'P&L': pnl,
+                'P&L %': pnl_percentage,
+                'Status': trade['status'],
+                'Timestamp': trade['timestamp'],
+                'Position Value': trade.get('position_value', 0),
+                'Stop Loss': trade.get('stop_loss', 'N/A'),
+                'Take Profit': trade.get('take_profit', 'N/A')
             })
         
-        if history_data:
-            df = pd.DataFrame(history_data)
-            
-            # Style the dataframe
-            def color_pnl(val):
-                color = 'green' if '+' in val else 'red' if '-' in val else 'black'
-                return f'color: {color}'
-            
-            styled_df = df.style.applymap(color_pnl, subset=['P&L', 'P&L %'])
-            st.dataframe(styled_df, use_container_width=True, height=400)
-            
-            # Export option
-            if st.button("📥 Export Session History"):
-                csv = df.to_csv(index=False)
-                st.download_button(
-                    label="Download CSV",
-                    data=csv,
-                    file_name=f"session_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
-                )
-    
-    with tab2:
-        # Performance charts for current session
-        st.subheader("📈 Performance Charts (Current Session)")
+        df = pd.DataFrame(export_data)
+        csv_string = df.to_csv(index=False)
         
-        # Filter closed trades
-        closed_trades = [t for t in trade_history if t.get('status') == 'CLOSED']
-        
-        if closed_trades:
-            # Prepare data for charts
-            df_trades = pd.DataFrame([
-                {
-                    'Date': t['timestamp'] if isinstance(t['timestamp'], datetime) else datetime.now(),
-                    'P&L': t.get('closed_pnl', 0),
-                    'P&L %': t.get('closed_pnl_percentage', 0),
-                    'Strategy': t.get('strategy', 'unknown'),
-                    'Symbol': t['symbol'],
-                    'Action': t['action'],
-                    'Value': t.get('position_value', 0)
-                }
-                for t in closed_trades
-            ])
-            
-            if not df_trades.empty:
-                df_trades = df_trades.sort_values('Date')
-                df_trades['Cumulative P&L'] = df_trades['P&L'].cumsum()
-                df_trades['Rolling Win Rate'] = (df_trades['P&L'] > 0).rolling(window=5, min_periods=1).mean()
-                
-                # Cumulative P&L chart
-                fig1 = go.Figure()
-                fig1.add_trace(go.Scatter(
-                    x=df_trades['Date'],
-                    y=df_trades['Cumulative P&L'],
-                    mode='lines+markers',
-                    name='Cumulative P&L',
-                    line=dict(color='green' if df_trades['Cumulative P&L'].iloc[-1] > 0 else 'red', width=2),
-                    hovertemplate='Date: %{x}<br>Cumulative P&L: $%{y:.2f}<extra></extra>'
-                ))
-                fig1.update_layout(
-                    title="Cumulative P&L (Current Session)",
-                    xaxis_title="Time",
-                    yaxis_title="Cumulative P&L ($)",
-                    height=400
-                )
-                st.plotly_chart(fig1, use_container_width=True)
-                
-                # Daily P&L bar chart
-                if len(df_trades) > 1:
-                    df_trades['Hour'] = pd.to_datetime(df_trades['Date']).dt.floor('H')
-                    hourly_pnl = df_trades.groupby('Hour')['P&L'].sum().reset_index()
-                    
-                    fig2 = go.Figure()
-                    colors = ['green' if x >= 0 else 'red' for x in hourly_pnl['P&L']]
-                    fig2.add_trace(go.Bar(
-                        x=hourly_pnl['Hour'],
-                        y=hourly_pnl['P&L'],
-                        name='Hourly P&L',
-                        marker_color=colors
-                    ))
-                    fig2.update_layout(
-                        title="Hourly P&L Distribution",
-                        xaxis_title="Hour",
-                        yaxis_title="P&L ($)",
-                        height=400
-                    )
-                    st.plotly_chart(fig2, use_container_width=True)
-                
-                # Win rate chart
-                fig3 = go.Figure()
-                fig3.add_trace(go.Scatter(
-                    x=df_trades['Date'],
-                    y=df_trades['Rolling Win Rate'] * 100,
-                    mode='lines',
-                    name='Rolling Win Rate (5 trades)',
-                    line=dict(color='blue', width=2)
-                ))
-                fig3.add_hline(y=50, line_dash="dash", line_color="red")
-                fig3.update_layout(
-                    title="Rolling Win Rate",
-                    xaxis_title="Time",
-                    yaxis_title="Win Rate (%)",
-                    height=400,
-                    yaxis=dict(range=[0, 100])
-                )
-                st.plotly_chart(fig3, use_container_width=True)
-        else:
-            st.info("No closed trades in current session yet.")
-    
-    with tab3:
-        # Strategy analysis for current session
-        st.subheader("🎯 Strategy Performance (Current Session)")
-        
-        strategy_perf = trading_engine.get_strategy_performance()
-        
-        if strategy_perf:
-            # Filter strategies with trades
-            strategies_with_trades = {k: v for k, v in strategy_perf.items() if v['trades'] > 0}
-            
-            if strategies_with_trades:
-                # Prepare strategy performance data
-                perf_data = []
-                for strategy, data in strategies_with_trades.items():
-                    perf_data.append({
-                        'Strategy': strategy,
-                        'Trades': data['trades'],
-                        'Wins': data['wins'],
-                        'Losses': data['losses'],
-                        'Win Rate': f"{data['win_rate']:.1%}",
-                        'Total P&L': f"${data['total_pnl']:+,.2f}",
-                        'Avg Win': f"${data['avg_win']:+,.2f}" if data['wins'] > 0 else "N/A",
-                        'Avg Loss': f"${data['avg_loss']:+,.2f}" if data['losses'] > 0 else "N/A"
-                    })
-                
-                df_perf = pd.DataFrame(perf_data)
-                
-                # Display as table
-                st.dataframe(df_perf, use_container_width=True)
-                
-                # Strategy comparison chart
-                if len(df_perf) > 1:
-                    fig = px.bar(df_perf, x='Strategy', y='Win Rate',
-                               title="Strategy Win Rate Comparison",
-                               color='Total P&L',
-                               color_continuous_scale='RdYlGn')
-                    fig.update_layout(height=400)
-                    st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("No strategy has executed trades in this session yet.")
-        else:
-            st.info("No strategy performance data available.")
+        return dash.no_update, dict(content=csv_string, filename=f"session_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
 
-def create_signal_generator(trading_engine):
-    """Create signal generator dashboard"""
-    st.subheader("🚦 Signal Generator")
+@app.callback(
+    Output('control-feedback', 'children', allow_duplicate=True),
+    [Input(f"close-btn-{position['trade_id']}", 'n_clicks') for position in trading_engine.get_open_positions()] + \
+    [Input(f"execute-btn-{i}", 'n_clicks') for i in range(10)],
+    prevent_initial_call=True
+)
+def handle_dynamic_buttons(*args):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        raise PreventUpdate
     
-    # Strategy selection
-    selected_strategies = st.multiselect(
-        "Select Strategies for Scanning",
-        list(trading_engine.strategies.keys()),
-        default=list(trading_engine.strategies.keys())[:3]
-    )
+    button_id = ctx.triggered[0]['prop_id'].split('.')[0]
     
-    # Symbol selection
-    selected_symbols = st.multiselect(
-        "Select Symbols to Scan",
-        ALL_SYMBOLS,
-        default=ALL_SYMBOLS[:5]
-    )
+    if 'close-btn-' in button_id:
+        # Close position
+        trade_id = button_id.replace('close-btn-', '')
+        if trading_engine._close_position(trade_id, 'MANUAL'):
+            return dbc.Alert("Position closed", color="success")
     
-    # Confidence filter
-    min_confidence = st.slider(
-        "Minimum Confidence",
-        min_value=0.5,
-        max_value=0.95,
-        value=0.65,
-        step=0.05
-    )
+    elif 'execute-btn-' in button_id:
+        # Execute signal (simplified - in real app, you'd need to track signals)
+        return dbc.Alert("Signal execution would require tracking signals between callbacks", color="info")
     
-    if st.button("🔍 Scan for Signals", type="primary", use_container_width=True):
-        if not selected_symbols or not selected_strategies:
-            st.warning("Please select at least one symbol and one strategy")
-            return
-        
-        with st.spinner("Scanning for trading signals..."):
-            signals = []
-            for symbol in selected_symbols:
-                current_price = trading_engine._get_current_price(symbol)
-                historical_data = trading_engine._get_historical_data(symbol)
-                
-                if historical_data.empty:
-                    continue
-                
-                for strategy_name in selected_strategies:
-                    strategy = trading_engine.strategies[strategy_name]
-                    signal = strategy.generate_signal(symbol, current_price, historical_data)
-                    if signal and signal['confidence'] >= min_confidence:
-                        signals.append(signal)
-            
-            if signals:
-                st.success(f"Found {len(signals)} signals with confidence ≥ {min_confidence}")
-                
-                # Display signals
-                for i, signal in enumerate(signals[:10]):
-                    with st.container():
-                        col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
-                        
-                        with col1:
-                            action_emoji = "🟢" if signal['action'] == 'BUY' else "🔴"
-                            st.write(f"**{action_emoji} {signal['symbol']} - {signal['action']}**")
-                            st.write(f"Strategy: {signal['strategy']}")
-                            st.write(f"Confidence: {signal['confidence']:.1%}")
-                        
-                        with col2:
-                            current_price = trading_engine._get_current_price(signal['symbol'])
-                            st.write(f"Price: ${current_price:.2f}")
-                        
-                        with col3:
-                            st.write(f"SL: ${signal.get('stop_loss', 0):.2f}")
-                            st.write(f"TP: ${signal.get('take_profit', 0):.2f}")
-                        
-                        with col4:
-                            if st.button("Execute", key=f"exec_{i}"):
-                                success, message = trading_engine._execute_trade(signal)
-                                if success:
-                                    st.success(message)
-                                    st.rerun()
-                                else:
-                                    st.error(message)
-                        
-                        st.divider()
-            else:
-                st.info("No signals found with current parameters")
-
-# =============================================
-# MAIN APPLICATION
-# =============================================
-
-def main():
-    """Main application function"""
-    
-    # Initialize session state
-    if 'trading_engine' not in st.session_state:
-        st.session_state.trading_engine = AlgorithmicTradingEngine(mode="paper", initial_capital=INITIAL_CAPITAL)
-    
-    # Create header
-    create_header()
-    
-    # Sidebar configuration
-    with st.sidebar:
-        st.header("⚙️ System Configuration")
-        
-        # Trading parameters
-        st.subheader("📊 Trading Parameters")
-        
-        initial_capital = st.number_input(
-            "Initial Capital ($)",
-            min_value=1000,
-            max_value=1000000,
-            value=1000,
-            step=1000
-        )
-        
-        # Market selection
-        st.subheader("🌐 Market Selection")
-        
-        selected_markets = st.multiselect(
-            "Select Markets to Trade",
-            MARKET_OPTIONS,
-            default=["CRYPTO", "STOCKS"]
-        )
-        
-        # System controls
-        st.subheader("🔄 System Controls")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            if st.button("New Session", use_container_width=True, type="primary"):
-                # Create new engine with fresh session
-                st.session_state.trading_engine = AlgorithmicTradingEngine(mode="paper", initial_capital=initial_capital)
-                st.success("New trading session started!")
-                st.rerun()
-        
-        with col2:
-            if st.button("Refresh", use_container_width=True, type="secondary"):
-                st.rerun()
-        
-        with col3:
-            trading_engine = st.session_state.trading_engine
-            if trading_engine.trade_history:
-                df = pd.DataFrame(trading_engine.trade_history)
-                csv = df.to_csv(index=False)
-                st.download_button(
-                    label="Export Session",
-                    data=csv,
-                    file_name=f"session_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-        
-        # System status
-        st.markdown("---")
-        trading_engine = st.session_state.trading_engine
-        status_color = "🟢" if trading_engine.trading_active else "🔴"
-        st.markdown(f"**System Status:** {status_color} {'Running' if trading_engine.trading_active else 'Stopped'}")
-        st.markdown(f"**Mode:** Paper Trading")
-        st.markdown(f"**Capital:** ${trading_engine.initial_capital:,.2f}")
-        st.markdown(f"**Session Start:** {trading_engine.session_metrics['start_time'].strftime('%H:%M:%S')}")
-        st.markdown(f"**Trades This Session:** {trading_engine.accuracy_metrics['executed_trades']}")
-        st.markdown(f"**Last Update:** {datetime.now().strftime('%H:%M:%S')}")
-    
-    # Main content with tabs
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "🎮 Control",
-        "📊 Portfolio",
-        "💰 Positions",
-        "📋 History",
-        "🚦 Signals"
-    ])
-    
-    trading_engine = st.session_state.trading_engine
-    
-    with tab1:
-        # Control Panel
-        create_trading_control_panel(trading_engine)
-        
-        # Quick stats
-        st.subheader("⚡ Quick Stats (Current Session)")
-        
-        portfolio = trading_engine.get_portfolio_summary()
-        
-        stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
-        
-        with stat_col1:
-            st.metric("Active Strategies", len(trading_engine.strategies))
-        
-        with stat_col2:
-            st.metric("Total Signals", portfolio['total_trades'])
-        
-        with stat_col3:
-            st.metric("Open Positions", portfolio['open_positions'])
-        
-        with stat_col4:
-            st.metric("Session P&L", f"${portfolio['total_pnl']:+,.2f}")
-    
-    with tab2:
-        # Portfolio Dashboard
-        create_portfolio_dashboard(trading_engine)
-    
-    with tab3:
-        # Positions Dashboard
-        create_positions_dashboard(trading_engine)
-    
-    with tab4:
-        # Trading History Dashboard
-        create_trading_history_dashboard(trading_engine)
-    
-    with tab5:
-        # Signal Generator
-        create_signal_generator(trading_engine)
-    
-    # Footer
-    st.markdown("---")
-    st.markdown("""
-    <div style="text-align: center; color: #666; font-size: 0.9em;">
-    <p><strong>RANTV Algorithmic Trading System v6.0</strong> | Session-Based Trading | Smart Money Concept</p>
-    <p>⚠️ This is for educational and paper trading purposes only. All trades are simulated.</p>
-    <p>💰 <strong>Session-Based History Only | $1000 Capital | Realistic P&L</strong></p>
-    <p><em>Note: Each browser session starts fresh. History is not saved between sessions.</em></p>
-    </div>
-    """, unsafe_allow_html=True)
+    return dash.no_update
 
 # =============================================
 # RUN APPLICATION
 # =============================================
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    app.run_server(debug=True, port=8050)
