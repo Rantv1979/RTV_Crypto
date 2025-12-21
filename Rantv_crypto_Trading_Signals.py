@@ -1484,7 +1484,7 @@ app = dash.Dash(
 
 app.title = "RANTV Algorithmic Trading Suite"
 
-# Initialize trading engine
+# Initialize trading engine as a global variable
 trading_engine = AlgorithmicTradingEngine(mode="paper", initial_capital=INITIAL_CAPITAL)
 
 # =============================================
@@ -1857,9 +1857,6 @@ app.layout = dbc.Container([
 # DASH CALLBACKS
 # =============================================
 
-# Store trading engine as a global variable
-global_trading_engine = AlgorithmicTradingEngine(mode="paper", initial_capital=INITIAL_CAPITAL)
-
 @app.callback(
     [Output('control-feedback', 'children'),
      Output('session-data', 'data')],
@@ -1879,29 +1876,29 @@ def handle_controls(start_clicks, stop_clicks, update_clicks, close_clicks, rese
     button_id = ctx.triggered[0]['prop_id'].split('.')[0]
     
     if button_id == 'start-trading-btn':
-        if global_trading_engine.start_trading():
+        if trading_engine.start_trading():
             return dbc.Alert("Algorithmic trading started!", color="success"), {}
     
     elif button_id == 'stop-trading-btn':
-        if global_trading_engine.stop_trading():
+        if trading_engine.stop_trading():
             return dbc.Alert("Algorithmic trading stopped!", color="warning"), {}
     
     elif button_id == 'update-positions-btn':
-        global_trading_engine._manage_positions()
+        trading_engine._manage_positions()
         return dbc.Alert("Positions updated!", color="info"), {}
     
     elif button_id == 'close-all-btn':
-        closed = global_trading_engine.close_all_positions()
+        closed = trading_engine.close_all_positions()
         return dbc.Alert(f"Closed {closed} positions!", color="danger"), {}
     
     elif button_id == 'reset-session-btn':
-        global_trading_engine.reset_daily_metrics()
+        trading_engine.reset_daily_metrics()
         return dbc.Alert("Session metrics reset!", color="info"), {}
     
     elif button_id == 'new-session-btn':
-        # Create new engine
-        global global_trading_engine
-        global_trading_engine = AlgorithmicTradingEngine(mode="paper", initial_capital=1000)
+        # Use global keyword to modify the global variable
+        global trading_engine
+        trading_engine = AlgorithmicTradingEngine(mode="paper", initial_capital=1000)
         return dbc.Alert("New trading session started!", color="success"), {}
     
     raise PreventUpdate
@@ -1924,7 +1921,7 @@ def handle_controls(start_clicks, stop_clicks, update_clicks, close_clicks, rese
 )
 def update_portfolio_metrics(n1, n2):
     """Update portfolio metrics"""
-    portfolio = global_trading_engine.get_portfolio_summary()
+    portfolio = trading_engine.get_portfolio_summary()
     
     total_value = f"${portfolio['total_value']:,.2f}"
     total_pnl = f"${portfolio['total_pnl']:+,.2f}"
@@ -1945,15 +1942,15 @@ def update_portfolio_metrics(n1, n2):
     total_losses = f"${portfolio['total_losses']:+,.2f}"
     
     # System status
-    status_color = "success" if global_trading_engine.trading_active else "danger"
-    status_text = "Running" if global_trading_engine.trading_active else "Stopped"
-    status_emoji = "🟢" if global_trading_engine.trading_active else "🔴"
+    status_color = "success" if trading_engine.trading_active else "danger"
+    status_text = "Running" if trading_engine.trading_active else "Stopped"
+    status_emoji = "🟢" if trading_engine.trading_active else "🔴"
     system_status = [
         dbc.Badge(f"{status_emoji} {status_text}", color=status_color, className="mr-2"),
         html.P(f"Mode: Paper Trading", className="mb-1"),
-        html.P(f"Capital: ${global_trading_engine.initial_capital:,.2f}", className="mb-1"),
-        html.P(f"Session Start: {global_trading_engine.session_metrics['start_time'].strftime('%H:%M:%S')}", className="mb-1"),
-        html.P(f"Trades This Session: {global_trading_engine.accuracy_metrics['executed_trades']}", className="mb-1"),
+        html.P(f"Capital: ${trading_engine.initial_capital:,.2f}", className="mb-1"),
+        html.P(f"Session Start: {trading_engine.session_metrics['start_time'].strftime('%H:%M:%S')}", className="mb-1"),
+        html.P(f"Trades This Session: {trading_engine.accuracy_metrics['executed_trades']}", className="mb-1"),
         html.P(f"Last Update: {datetime.now().strftime('%H:%M:%S')}", className="mb-0"),
     ]
     
@@ -1967,7 +1964,7 @@ def update_portfolio_metrics(n1, n2):
 )
 def update_positions_table(n_intervals):
     """Update positions table"""
-    positions = global_trading_engine.get_open_positions()
+    positions = trading_engine.get_open_positions()
     
     if not positions:
         return html.Div("No open positions", className="text-center text-muted p-4")
@@ -2019,7 +2016,7 @@ def update_positions_table(n_intervals):
 )
 def update_trade_history(n_intervals):
     """Update trade history table"""
-    trade_history = global_trading_engine.get_trade_history(100)
+    trade_history = trading_engine.get_trade_history(100)
     
     if not trade_history:
         return html.Div("No trades in current session. Start trading to generate trades!", 
@@ -2111,7 +2108,7 @@ def update_trade_history(n_intervals):
 )
 def update_performance_charts(n_intervals):
     """Update performance charts"""
-    trade_history = global_trading_engine.get_trade_history(100)
+    trade_history = trading_engine.get_trade_history(100)
     closed_trades = [t for t in trade_history if t.get('status') == 'CLOSED']
     
     # Initialize empty figures
@@ -2230,7 +2227,7 @@ def update_performance_charts(n_intervals):
 )
 def update_strategy_performance(n_intervals):
     """Update strategy performance"""
-    strategy_perf = global_trading_engine.get_strategy_performance()
+    strategy_perf = trading_engine.get_strategy_performance()
     strategies_with_trades = {k: v for k, v in strategy_perf.items() if v['trades'] > 0}
     
     if not strategies_with_trades:
@@ -2336,14 +2333,14 @@ def handle_signals_and_export(scan_clicks, export_clicks, selected_strategies, s
         # Scan for signals
         signals = []
         for symbol in selected_symbols:
-            current_price = global_trading_engine._get_current_price(symbol)
-            historical_data = global_trading_engine._get_historical_data(symbol)
+            current_price = trading_engine._get_current_price(symbol)
+            historical_data = trading_engine._get_historical_data(symbol)
             
             if historical_data.empty:
                 continue
             
             for strategy_name in selected_strategies:
-                strategy = global_trading_engine.strategies[strategy_name]
+                strategy = trading_engine.strategies[strategy_name]
                 signal = strategy.generate_signal(symbol, current_price, historical_data)
                 if signal and signal['confidence'] >= min_confidence:
                     signals.append(signal)
@@ -2367,7 +2364,7 @@ def handle_signals_and_export(scan_clicks, export_clicks, selected_strategies, s
                             html.P(f"Confidence: {signal['confidence']:.1%}"),
                         ], width=4),
                         dbc.Col([
-                            html.P(f"Price: ${global_trading_engine._get_current_price(signal['symbol']):.2f}"),
+                            html.P(f"Price: ${trading_engine._get_current_price(signal['symbol']):.2f}"),
                             html.P(f"SL: ${signal.get('stop_loss', 0):.2f}"),
                             html.P(f"TP: ${signal.get('take_profit', 0):.2f}"),
                         ], width=4),
@@ -2388,7 +2385,7 @@ def handle_signals_and_export(scan_clicks, export_clicks, selected_strategies, s
     
     elif button_id == 'export-history-btn':
         # Export session history
-        trade_history = global_trading_engine.get_trade_history(100)
+        trade_history = trading_engine.get_trade_history(100)
         
         if not trade_history:
             return dbc.Alert("No trade history to export", color="warning"), dash.no_update
@@ -2439,7 +2436,7 @@ def handle_signals_and_export(scan_clicks, export_clicks, selected_strategies, s
 def handle_close_all(close_all_clicks):
     """Handle close all positions"""
     if close_all_clicks:
-        closed = global_trading_engine.close_all_positions()
+        closed = trading_engine.close_all_positions()
         return dbc.Alert(f"Closed {closed} positions!", color="danger")
     raise PreventUpdate
 
