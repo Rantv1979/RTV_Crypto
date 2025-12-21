@@ -1,6 +1,6 @@
 # =============================================
 # RANTV COMPLETE ALGORITHMIC TRADING SYSTEM
-# WITH REAL TRADING & PAPER TRADING MODES
+# WITH SMART MONEY CONCEPT & ACCURACY TRACKING
 # =============================================
 
 import time
@@ -20,6 +20,8 @@ import pickle
 from pathlib import Path
 import threading
 import queue
+from collections import defaultdict
+import plotly.express as px
 warnings.filterwarnings('ignore')
 
 # =============================================
@@ -36,7 +38,7 @@ st.set_page_config(
 UTC_TZ = pytz.timezone("UTC")
 
 # Trading Parameters
-INITIAL_CAPITAL = 100000.0
+INITIAL_CAPITAL = 500.0
 TRADE_ALLOCATION = 0.15
 MAX_DAILY_TRADES = 15
 MAX_POSITIONS = 10
@@ -110,63 +112,249 @@ class DataStorage:
         return {}
 
 # =============================================
-# SMART MONEY CONCEPT ANALYZER
+# ENHANCED SMART MONEY CONCEPT ANALYZER
 # =============================================
 
-class SmartMoneyAnalyzer:
-    """Smart Money Concept analyzer"""
+class EnhancedSmartMoneyAnalyzer:
+    """Enhanced Smart Money Concept analyzer with multiple SMC strategies"""
     
     def __init__(self):
         self.order_flow_cache = {}
         self.liquidity_zones = {}
         
     def detect_fair_value_gaps(self, high, low, close):
-        """Detect Fair Value Gaps"""
+        """Detect Fair Value Gaps with strength analysis"""
         fvgs = []
         
         if len(close) < 4:
             return fvgs
             
         for i in range(1, len(close)-2):
+            # Bullish FVG
             if low.iloc[i] > high.iloc[i-1]:
                 fvg = {
                     'type': 'BULLISH_FVG',
                     'top': float(low.iloc[i]),
                     'bottom': float(high.iloc[i-1]),
                     'mid': float((low.iloc[i] + high.iloc[i-1]) / 2),
-                    'index': i
+                    'index': i,
+                    'strength': (low.iloc[i] - high.iloc[i-1]) / high.iloc[i-1],
+                    'volume': float(close.iloc[i-1:i+2].mean())
                 }
                 fvgs.append(fvg)
             
+            # Bearish FVG
             elif high.iloc[i] < low.iloc[i-1]:
                 fvg = {
                     'type': 'BEARISH_FVG',
                     'top': float(low.iloc[i-1]),
                     'bottom': float(high.iloc[i]),
                     'mid': float((low.iloc[i-1] + high.iloc[i]) / 2),
-                    'index': i
+                    'index': i,
+                    'strength': (low.iloc[i-1] - high.iloc[i]) / high.iloc[i],
+                    'volume': float(close.iloc[i-1:i+2].mean())
                 }
                 fvgs.append(fvg)
         
-        return fvgs[-5:] if fvgs else []
+        return sorted(fvgs[-10:], key=lambda x: x['strength'], reverse=True) if fvgs else []
+    
+    def identify_liquidity_zones(self, high, low, volume, period=20):
+        """Identify institutional liquidity zones"""
+        zones = []
+        
+        if len(high) < period * 2:
+            return zones
+        
+        swing_highs = []
+        swing_lows = []
+        
+        for i in range(period, len(high) - period):
+            if high.iloc[i] >= high.iloc[i-period:i+period+1].max():
+                swing_highs.append({
+                    'price': float(high.iloc[i]),
+                    'index': i,
+                    'volume': float(volume.iloc[i])
+                })
+            
+            if low.iloc[i] <= low.iloc[i-period:i+period+1].min():
+                swing_lows.append({
+                    'price': float(low.iloc[i]),
+                    'index': i,
+                    'volume': float(volume.iloc[i])
+                })
+        
+        # Cluster similar price levels
+        cluster_threshold = 0.005
+        
+        def cluster_levels(levels, threshold):
+            clusters = []
+            levels_sorted = sorted(levels, key=lambda x: x['price'])
+            
+            current_cluster = []
+            for level in levels_sorted:
+                if not current_cluster:
+                    current_cluster.append(level)
+                else:
+                    avg_price = np.mean([l['price'] for l in current_cluster])
+                    if abs(level['price'] - avg_price) / avg_price <= threshold:
+                        current_cluster.append(level)
+                    else:
+                        if len(current_cluster) >= 2:
+                            clusters.append(current_cluster)
+                        current_cluster = [level]
+            
+            if current_cluster and len(current_cluster) >= 2:
+                clusters.append(current_cluster)
+            
+            return clusters
+        
+        resistance_clusters = cluster_levels(swing_highs, cluster_threshold)
+        support_clusters = cluster_levels(swing_lows, cluster_threshold)
+        
+        for cluster in resistance_clusters:
+            avg_price = np.mean([l['price'] for l in cluster])
+            total_volume = sum([l['volume'] for l in cluster])
+            zones.append({
+                'type': 'RESISTANCE',
+                'price': float(avg_price),
+                'touches': len(cluster),
+                'volume': float(total_volume),
+                'strength': len(cluster) * (total_volume / len(cluster))
+            })
+        
+        for cluster in support_clusters:
+            avg_price = np.mean([l['price'] for l in cluster])
+            total_volume = sum([l['volume'] for l in cluster])
+            zones.append({
+                'type': 'SUPPORT',
+                'price': float(avg_price),
+                'touches': len(cluster),
+                'volume': float(total_volume),
+                'strength': len(cluster) * (total_volume / len(cluster))
+            })
+        
+        return sorted(zones, key=lambda x: x['strength'], reverse=True)[:5]
+    
+    def calculate_order_block(self, open_price, high, low, close, volume):
+        """Identify order blocks (institutional accumulation/distribution)"""
+        order_blocks = []
+        
+        if len(close) < 5:
+            return order_blocks
+        
+        for i in range(2, len(close)-2):
+            current_candle = {
+                'open': open_price.iloc[i],
+                'high': high.iloc[i],
+                'low': low.iloc[i],
+                'close': close.iloc[i],
+                'volume': volume.iloc[i]
+            }
+            
+            prev_candle = {
+                'open': open_price.iloc[i-1],
+                'high': high.iloc[i-1],
+                'low': low.iloc[i-1],
+                'close': close.iloc[i-1],
+                'volume': volume.iloc[i-1]
+            }
+            
+            # Bullish Order Block
+            if (prev_candle['close'] < prev_candle['open'] and
+                abs(prev_candle['close'] - prev_candle['open']) > 0.5 * (prev_candle['high'] - prev_candle['low']) and
+                current_candle['close'] > current_candle['open'] and
+                current_candle['close'] > prev_candle['low'] and
+                current_candle['volume'] > prev_candle['volume'] * 1.2):
+                
+                ob = {
+                    'type': 'BULLISH_OB',
+                    'high': float(prev_candle['high']),
+                    'low': float(prev_candle['low']),
+                    'mid': float((prev_candle['high'] + prev_candle['low']) / 2),
+                    'index': i,
+                    'volume_ratio': float(current_candle['volume'] / prev_candle['volume'])
+                }
+                order_blocks.append(ob)
+            
+            # Bearish Order Block
+            elif (prev_candle['close'] > prev_candle['open'] and
+                  abs(prev_candle['close'] - prev_candle['open']) > 0.5 * (prev_candle['high'] - prev_candle['low']) and
+                  current_candle['close'] < current_candle['open'] and
+                  current_candle['close'] < prev_candle['high'] and
+                  current_candle['volume'] > prev_candle['volume'] * 1.2):
+                
+                ob = {
+                    'type': 'BEARISH_OB',
+                    'high': float(prev_candle['high']),
+                    'low': float(prev_candle['low']),
+                    'mid': float((prev_candle['high'] + prev_candle['low']) / 2),
+                    'index': i,
+                    'volume_ratio': float(current_candle['volume'] / prev_candle['volume'])
+                }
+                order_blocks.append(ob)
+        
+        return order_blocks[-5:]
+    
+    def detect_breakers(self, high, low, close):
+        """Detect breaker blocks (liquidity grabs)"""
+        breakers = []
+        
+        if len(close) < 10:
+            return breakers
+        
+        for i in range(5, len(close)-5):
+            prev_swing_high = max(high.iloc[i-5:i])
+            prev_swing_low = min(low.iloc[i-5:i])
+            
+            current_high = high.iloc[i]
+            current_low = low.iloc[i]
+            
+            # Bullish Breaker
+            if (current_high > prev_swing_high * 1.005 and
+                close.iloc[i] < (current_high + current_low) / 2):
+                
+                breaker = {
+                    'type': 'BULLISH_BREAKER',
+                    'break_price': float(prev_swing_high),
+                    'current_price': float(close.iloc[i]),
+                    'rejection_strength': float((current_high - close.iloc[i]) / (current_high - current_low)),
+                    'index': i
+                }
+                breakers.append(breaker)
+            
+            # Bearish Breaker
+            elif (current_low < prev_swing_low * 0.995 and
+                  close.iloc[i] > (current_high + current_low) / 2):
+                
+                breaker = {
+                    'type': 'BEARISH_BREAKER',
+                    'break_price': float(prev_swing_low),
+                    'current_price': float(close.iloc[i]),
+                    'rejection_strength': float((close.iloc[i] - current_low) / (current_high - current_low)),
+                    'index': i
+                }
+                breakers.append(breaker)
+        
+        return breakers
     
     def analyze_market_structure(self, high, low, close):
-        """Analyze market structure"""
+        """Comprehensive market structure analysis"""
         if len(close) < 100:
             return {'trend': 'NEUTRAL', 'momentum': 0, 'structure': 'RANGING'}
         
-        # Calculate trend
-        sma_50 = close.rolling(window=50).mean()
-        trend = 1 if close.iloc[-1] > sma_50.iloc[-1] else -1
+        # HTF trend using 50-period SMA
+        htf_sma = close.rolling(window=50).mean()
+        htf_trend = 1 if close.iloc[-1] > htf_sma.iloc[-1] else -1
         
-        # Calculate RSI
+        # LTF momentum using 20-period RSI
         delta = close.diff()
         gain = delta.clip(lower=0).rolling(window=14).mean()
         loss = (-delta.clip(upper=0)).rolling(window=14).mean()
         rs = gain / loss.replace(0, np.nan)
         rsi = 100 - (100 / (1 + rs))
+        ltf_rsi = rsi.iloc[-1]
         
-        # Determine structure
+        # Market structure
         recent_highs = high.iloc[-20:].tolist()
         recent_lows = low.iloc[-20:].tolist()
         
@@ -182,10 +370,11 @@ class SmartMoneyAnalyzer:
         else:
             structure = 'RANGING'
         
+        # Momentum score
         momentum_score = 0
-        if trend == 1:
+        if htf_trend == 1:
             momentum_score += 0.3
-        if rsi.iloc[-1] > 50:
+        if ltf_rsi > 50:
             momentum_score += 0.2
         if structure == 'UPTREND':
             momentum_score += 0.3
@@ -193,84 +382,16 @@ class SmartMoneyAnalyzer:
             momentum_score -= 0.3
         
         return {
-            'htf_trend': 'BULLISH' if trend == 1 else 'BEARISH',
-            'ltf_momentum': 'BULLISH' if rsi.iloc[-1] > 50 else 'BEARISH',
+            'htf_trend': 'BULLISH' if htf_trend == 1 else 'BEARISH',
+            'ltf_momentum': 'BULLISH' if ltf_rsi > 50 else 'BEARISH',
             'structure': structure,
             'momentum_score': momentum_score,
-            'rsi': rsi.iloc[-1]
+            'rsi': ltf_rsi,
+            'sma_50': htf_sma.iloc[-1]
         }
 
 # =============================================
-# REAL-TIME MARKET DATA STREAM
-# =============================================
-
-class MarketDataStream:
-    """Real-time market data streaming"""
-    
-    def __init__(self):
-        self.price_stream = {}
-        self.subscriptions = set()
-        
-    def subscribe(self, symbols):
-        """Subscribe to symbols for real-time updates"""
-        for symbol in symbols:
-            self.subscriptions.add(symbol)
-            self.price_stream[symbol] = {
-                'bid': 0,
-                'ask': 0,
-                'last': 0,
-                'volume': 0,
-                'timestamp': None
-            }
-    
-    def get_real_time_price(self, symbol):
-        """Get real-time price for symbol"""
-        if symbol in self.price_stream and self.price_stream[symbol]['last'] > 0:
-            return self.price_stream[symbol]['last']
-        
-        # Fallback to Yahoo Finance
-        try:
-            ticker = yf.Ticker(symbol)
-            data = ticker.history(period='1d', interval='1m')
-            if not data.empty:
-                price = float(data['Close'].iloc[-1])
-                self.price_stream[symbol] = {
-                    'bid': price * 0.999,
-                    'ask': price * 1.001,
-                    'last': price,
-                    'volume': float(data['Volume'].iloc[-1]),
-                    'timestamp': datetime.now()
-                }
-                return price
-        except:
-            pass
-        
-        return 100.0  # Default fallback
-    
-    def simulate_market_data(self):
-        """Simulate real-time market data updates"""
-        for symbol in self.subscriptions:
-            if symbol not in self.price_stream:
-                continue
-            
-            current = self.price_stream[symbol]['last']
-            if current == 0:
-                current = self.get_real_time_price(symbol)
-            
-            # Simulate price movement
-            change = np.random.normal(0, 0.001) * current
-            new_price = current + change
-            
-            self.price_stream[symbol] = {
-                'bid': new_price * 0.9995,
-                'ask': new_price * 1.0005,
-                'last': new_price,
-                'volume': np.random.randint(100, 10000),
-                'timestamp': datetime.now()
-            }
-
-# =============================================
-# TRADING STRATEGIES
+# TRADING STRATEGIES WITH SMART MONEY CONCEPT
 # =============================================
 
 class BaseStrategy:
@@ -280,6 +401,7 @@ class BaseStrategy:
         self.name = "Base Strategy"
         self.description = "Base strategy class"
         self.parameters = {}
+        self.smc_analyzer = EnhancedSmartMoneyAnalyzer()
     
     def generate_signal(self, symbol, current_price, historical_data):
         """Generate trading signal"""
@@ -295,8 +417,9 @@ class BaseStrategy:
         # Moving averages
         indicators['sma_20'] = data['Close'].rolling(window=20).mean().iloc[-1]
         indicators['sma_50'] = data['Close'].rolling(window=50).mean().iloc[-1]
-        indicators['ema_12'] = data['Close'].ewm(span=12).mean().iloc[-1]
-        indicators['ema_26'] = data['Close'].ewm(span=26).mean().iloc[-1]
+        indicators['ema_8'] = data['Close'].ewm(span=8).mean().iloc[-1]
+        indicators['ema_21'] = data['Close'].ewm(span=21).mean().iloc[-1]
+        indicators['ema_50'] = data['Close'].ewm(span=50).mean().iloc[-1]
         
         # RSI
         delta = data['Close'].diff()
@@ -306,7 +429,7 @@ class BaseStrategy:
         indicators['rsi'] = 100 - (100 / (1 + rs)).iloc[-1]
         
         # MACD
-        indicators['macd'] = indicators['ema_12'] - indicators['ema_26']
+        indicators['macd'] = indicators['ema_12'] if 'ema_12' in indicators else indicators['ema_8']
         indicators['macd_signal'] = data['Close'].ewm(span=9).mean().iloc[-1]
         
         # Bollinger Bands
@@ -315,19 +438,216 @@ class BaseStrategy:
         indicators['bb_upper'] = indicators['bb_middle'] + (bb_std * 2)
         indicators['bb_lower'] = indicators['bb_middle'] - (bb_std * 2)
         
+        # ATR
+        high_low = data['High'] - data['Low']
+        high_close = (data['High'] - data['Close'].shift()).abs()
+        low_close = (data['Low'] - data['Close'].shift()).abs()
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = ranges.max(axis=1)
+        indicators['atr'] = true_range.rolling(window=14).mean().iloc[-1]
+        
         # Volume
         indicators['volume_sma'] = data['Volume'].rolling(window=20).mean().iloc[-1]
         indicators['volume_ratio'] = data['Volume'].iloc[-1] / indicators['volume_sma'] if indicators['volume_sma'] > 0 else 1
         
+        # VWAP
+        typical_price = (data['High'] + data['Low'] + data['Close']) / 3
+        cumulative_tp_volume = (typical_price * data['Volume']).cumsum()
+        cumulative_volume = data['Volume'].cumsum()
+        indicators['vwap'] = cumulative_tp_volume.iloc[-1] / cumulative_volume.iloc[-1]
+        
         return indicators
 
-class TrendFollowingStrategy(BaseStrategy):
-    """Trend following strategy"""
+class SMC_FVG_Strategy(BaseStrategy):
+    """Smart Money Concept - Fair Value Gap Strategy"""
     
     def __init__(self):
         super().__init__()
-        self.name = "Trend Following"
-        self.description = "Follows established market trends"
+        self.name = "SMC FVG Strategy"
+        self.description = "Trades Fair Value Gaps with volume confirmation"
+    
+    def generate_signal(self, symbol, current_price, historical_data):
+        indicators = self.calculate_indicators(historical_data)
+        
+        if len(indicators) == 0:
+            return None
+        
+        # Get SMC analysis
+        fvgs = self.smc_analyzer.detect_fair_value_gaps(
+            historical_data['High'],
+            historical_data['Low'],
+            historical_data['Close']
+        )
+        
+        if not fvgs:
+            return None
+        
+        latest_fvg = fvgs[-1]
+        signal = {
+            'symbol': symbol,
+            'strategy': self.name,
+            'confidence': 0.0,
+            'smc_data': latest_fvg
+        }
+        
+        # Bullish FVG signal
+        if (latest_fvg['type'] == 'BULLISH_FVG' and
+            abs(current_price - latest_fvg['mid']) / latest_fvg['mid'] < 0.01 and
+            indicators['volume_ratio'] > 1.2):
+            
+            signal['action'] = 'BUY'
+            signal['confidence'] = 0.75
+            signal['stop_loss'] = latest_fvg['bottom'] * 0.995
+            signal['take_profit'] = latest_fvg['top'] * 1.01
+        
+        # Bearish FVG signal
+        elif (latest_fvg['type'] == 'BEARISH_FVG' and
+              abs(current_price - latest_fvg['mid']) / latest_fvg['mid'] < 0.01 and
+              indicators['volume_ratio'] > 1.2):
+            
+            signal['action'] = 'SELL'
+            signal['confidence'] = 0.75
+            signal['stop_loss'] = latest_fvg['top'] * 1.005
+            signal['take_profit'] = latest_fvg['bottom'] * 0.99
+        
+        else:
+            return None
+        
+        return signal
+
+class SMC_OrderBlock_Strategy(BaseStrategy):
+    """Smart Money Concept - Order Block Strategy"""
+    
+    def __init__(self):
+        super().__init__()
+        self.name = "SMC Order Block Strategy"
+        self.description = "Trades institutional order blocks"
+    
+    def generate_signal(self, symbol, current_price, historical_data):
+        indicators = self.calculate_indicators(historical_data)
+        
+        if len(indicators) == 0:
+            return None
+        
+        # Get SMC analysis
+        order_blocks = self.smc_analyzer.calculate_order_block(
+            historical_data['Open'],
+            historical_data['High'],
+            historical_data['Low'],
+            historical_data['Close'],
+            historical_data['Volume']
+        )
+        
+        if not order_blocks:
+            return None
+        
+        latest_ob = order_blocks[-1]
+        signal = {
+            'symbol': symbol,
+            'strategy': self.name,
+            'confidence': 0.0,
+            'smc_data': latest_ob
+        }
+        
+        # Bullish Order Block signal
+        if (latest_ob['type'] == 'BULLISH_OB' and
+            abs(current_price - latest_ob['mid']) / latest_ob['mid'] < 0.01 and
+            indicators['rsi'] < 50 and
+            latest_ob['volume_ratio'] > 1.5):
+            
+            signal['action'] = 'BUY'
+            signal['confidence'] = 0.8
+            signal['stop_loss'] = latest_ob['low'] * 0.99
+            signal['take_profit'] = latest_ob['high'] * 1.02
+        
+        # Bearish Order Block signal
+        elif (latest_ob['type'] == 'BEARISH_OB' and
+              abs(current_price - latest_ob['mid']) / latest_ob['mid'] < 0.01 and
+              indicators['rsi'] > 50 and
+              latest_ob['volume_ratio'] > 1.5):
+            
+            signal['action'] = 'SELL'
+            signal['confidence'] = 0.8
+            signal['stop_loss'] = latest_ob['high'] * 1.01
+            signal['take_profit'] = latest_ob['low'] * 0.98
+        
+        else:
+            return None
+        
+        return signal
+
+class SMC_LiquidityGrab_Strategy(BaseStrategy):
+    """Smart Money Concept - Liquidity Grab Strategy"""
+    
+    def __init__(self):
+        super().__init__()
+        self.name = "SMC Liquidity Grab Strategy"
+        self.description = "Trades liquidity grabs and reversals"
+    
+    def generate_signal(self, symbol, current_price, historical_data):
+        indicators = self.calculate_indicators(historical_data)
+        
+        if len(indicators) == 0:
+            return None
+        
+        # Get SMC analysis
+        breakers = self.smc_analyzer.detect_breakers(
+            historical_data['High'],
+            historical_data['Low'],
+            historical_data['Close']
+        )
+        
+        market_structure = self.smc_analyzer.analyze_market_structure(
+            historical_data['High'],
+            historical_data['Low'],
+            historical_data['Close']
+        )
+        
+        if not breakers:
+            return None
+        
+        latest_breaker = breakers[-1]
+        signal = {
+            'symbol': symbol,
+            'strategy': self.name,
+            'confidence': 0.0,
+            'smc_data': latest_breaker
+        }
+        
+        # Bullish Breaker signal (bear trap)
+        if (latest_breaker['type'] == 'BULLISH_BREAKER' and
+            latest_breaker['rejection_strength'] > 0.6 and
+            market_structure['structure'] == 'UPTREND' and
+            indicators['volume_ratio'] > 1.5):
+            
+            signal['action'] = 'BUY'
+            signal['confidence'] = 0.85
+            signal['stop_loss'] = latest_breaker['break_price'] * 0.99
+            signal['take_profit'] = current_price + (latest_breaker['break_price'] - current_price) * 2
+        
+        # Bearish Breaker signal (bull trap)
+        elif (latest_breaker['type'] == 'BEARISH_BREAKER' and
+              latest_breaker['rejection_strength'] > 0.6 and
+              market_structure['structure'] == 'DOWNTREND' and
+              indicators['volume_ratio'] > 1.5):
+            
+            signal['action'] = 'SELL'
+            signal['confidence'] = 0.85
+            signal['stop_loss'] = latest_breaker['break_price'] * 1.01
+            signal['take_profit'] = current_price - (current_price - latest_breaker['break_price']) * 2
+        
+        else:
+            return None
+        
+        return signal
+
+class TrendFollowingStrategy(BaseStrategy):
+    """Traditional Trend Following Strategy"""
+    
+    def __init__(self):
+        super().__init__()
+        self.name = "Trend Following Strategy"
+        self.description = "Follows established market trends with EMA alignment"
     
     def generate_signal(self, symbol, current_price, historical_data):
         indicators = self.calculate_indicators(historical_data)
@@ -341,21 +661,27 @@ class TrendFollowingStrategy(BaseStrategy):
             'confidence': 0.0
         }
         
-        # Bullish trend
-        if (current_price > indicators['sma_20'] > indicators['sma_50'] and
-            indicators['rsi'] > 50 and indicators['rsi'] < 70):
+        # Bullish trend: EMAs aligned bullish, price above EMAs, RSI > 50
+        if (indicators['ema_8'] > indicators['ema_21'] > indicators['ema_50'] and
+            current_price > indicators['ema_8'] and
+            indicators['rsi'] > 50 and indicators['rsi'] < 70 and
+            indicators['volume_ratio'] > 1.2):
+            
             signal['action'] = 'BUY'
             signal['confidence'] = 0.7
-            signal['stop_loss'] = current_price * 0.95
-            signal['take_profit'] = current_price * 1.10
+            signal['stop_loss'] = current_price - (indicators['atr'] * 1.5)
+            signal['take_profit'] = current_price + (indicators['atr'] * 3)
         
-        # Bearish trend
-        elif (current_price < indicators['sma_20'] < indicators['sma_50'] and
-              indicators['rsi'] < 50 and indicators['rsi'] > 30):
+        # Bearish trend: EMAs aligned bearish, price below EMAs, RSI < 50
+        elif (indicators['ema_8'] < indicators['ema_21'] < indicators['ema_50'] and
+              current_price < indicators['ema_8'] and
+              indicators['rsi'] < 50 and indicators['rsi'] > 30 and
+              indicators['volume_ratio'] > 1.2):
+            
             signal['action'] = 'SELL'
             signal['confidence'] = 0.7
-            signal['stop_loss'] = current_price * 1.05
-            signal['take_profit'] = current_price * 0.90
+            signal['stop_loss'] = current_price + (indicators['atr'] * 1.5)
+            signal['take_profit'] = current_price - (indicators['atr'] * 3)
         
         else:
             return None
@@ -363,12 +689,12 @@ class TrendFollowingStrategy(BaseStrategy):
         return signal
 
 class MeanReversionStrategy(BaseStrategy):
-    """Mean reversion strategy"""
+    """Mean Reversion Strategy"""
     
     def __init__(self):
         super().__init__()
-        self.name = "Mean Reversion"
-        self.description = "Trades price reversions to mean"
+        self.name = "Mean Reversion Strategy"
+        self.description = "Trades price reversions to mean with RSI extremes"
     
     def generate_signal(self, symbol, current_price, historical_data):
         indicators = self.calculate_indicators(historical_data)
@@ -382,15 +708,21 @@ class MeanReversionStrategy(BaseStrategy):
             'confidence': 0.0
         }
         
-        # Oversold
-        if current_price < indicators['bb_lower'] and indicators['rsi'] < 30:
+        # Oversold: Price below lower Bollinger Band, RSI < 30
+        if (current_price < indicators['bb_lower'] and
+            indicators['rsi'] < 30 and
+            indicators['volume_ratio'] > 1.0):
+            
             signal['action'] = 'BUY'
             signal['confidence'] = 0.65
             signal['stop_loss'] = current_price * 0.97
             signal['take_profit'] = indicators['bb_middle']
         
-        # Overbought
-        elif current_price > indicators['bb_upper'] and indicators['rsi'] > 70:
+        # Overbought: Price above upper Bollinger Band, RSI > 70
+        elif (current_price > indicators['bb_upper'] and
+              indicators['rsi'] > 70 and
+              indicators['volume_ratio'] > 1.0):
+            
             signal['action'] = 'SELL'
             signal['confidence'] = 0.65
             signal['stop_loss'] = current_price * 1.03
@@ -402,16 +734,18 @@ class MeanReversionStrategy(BaseStrategy):
         return signal
 
 class BreakoutStrategy(BaseStrategy):
-    """Breakout trading strategy"""
+    """Breakout Trading Strategy"""
     
     def __init__(self):
         super().__init__()
-        self.name = "Breakout"
-        self.description = "Trades price breakouts from consolidation"
+        self.name = "Breakout Strategy"
+        self.description = "Trades price breakouts from consolidation with volume confirmation"
     
     def generate_signal(self, symbol, current_price, historical_data):
         if len(historical_data) < 20:
             return None
+        
+        indicators = self.calculate_indicators(historical_data)
         
         # Calculate recent range
         recent_high = historical_data['High'].iloc[-20:].max()
@@ -427,7 +761,9 @@ class BreakoutStrategy(BaseStrategy):
         # Bullish breakout
         if (current_price > recent_high and 
             consolidation_range < 0.05 and
-            historical_data['Volume'].iloc[-1] > historical_data['Volume'].rolling(window=20).mean().iloc[-1] * 1.5):
+            indicators['volume_ratio'] > 1.5 and
+            indicators['rsi'] > 50):
+            
             signal['action'] = 'BUY'
             signal['confidence'] = 0.75
             signal['stop_loss'] = recent_low
@@ -436,11 +772,60 @@ class BreakoutStrategy(BaseStrategy):
         # Bearish breakout
         elif (current_price < recent_low and
               consolidation_range < 0.05 and
-              historical_data['Volume'].iloc[-1] > historical_data['Volume'].rolling(window=20).mean().iloc[-1] * 1.5):
+              indicators['volume_ratio'] > 1.5 and
+              indicators['rsi'] < 50):
+            
             signal['action'] = 'SELL'
             signal['confidence'] = 0.75
             signal['stop_loss'] = recent_high
             signal['take_profit'] = current_price - (recent_high - recent_low) * 1.5
+        
+        else:
+            return None
+        
+        return signal
+
+class VWAP_Strategy(BaseStrategy):
+    """VWAP Trading Strategy"""
+    
+    def __init__(self):
+        super().__init__()
+        self.name = "VWAP Strategy"
+        self.description = "Trades VWAP reversals with volume confirmation"
+    
+    def generate_signal(self, symbol, current_price, historical_data):
+        indicators = self.calculate_indicators(historical_data)
+        
+        if len(indicators) == 0:
+            return None
+        
+        signal = {
+            'symbol': symbol,
+            'strategy': self.name,
+            'confidence': 0.0
+        }
+        
+        # Price above VWAP with bullish momentum
+        if (current_price > indicators['vwap'] and
+            indicators['rsi'] > 50 and
+            indicators['volume_ratio'] > 1.3 and
+            historical_data['Close'].iloc[-1] > historical_data['Open'].iloc[-1]):
+            
+            signal['action'] = 'BUY'
+            signal['confidence'] = 0.7
+            signal['stop_loss'] = indicators['vwap']
+            signal['take_profit'] = current_price + (indicators['atr'] * 2)
+        
+        # Price below VWAP with bearish momentum
+        elif (current_price < indicators['vwap'] and
+              indicators['rsi'] < 50 and
+              indicators['volume_ratio'] > 1.3 and
+              historical_data['Close'].iloc[-1] < historical_data['Open'].iloc[-1]):
+            
+            signal['action'] = 'SELL'
+            signal['confidence'] = 0.7
+            signal['stop_loss'] = indicators['vwap']
+            signal['take_profit'] = current_price - (indicators['atr'] * 2)
         
         else:
             return None
@@ -452,12 +837,16 @@ class BreakoutStrategy(BaseStrategy):
 # =============================================
 
 class RiskManager:
-    """Risk management module"""
+    """Advanced Risk Management Module"""
     
     def __init__(self):
         self.max_daily_loss = -0.05  # -5% daily loss limit
         self.max_position_size = 0.1  # 10% of capital per position
+        self.max_correlation = 0.7
         self.daily_loss = 0.0
+        self.position_correlation = {}
+        self.daily_trades = 0
+        self.max_daily_trades = 15
     
     def validate_signal(self, signal, current_positions, available_capital):
         """Validate trading signal against risk rules"""
@@ -465,6 +854,10 @@ class RiskManager:
         # Check daily loss limit
         if self.daily_loss < self.max_daily_loss * available_capital:
             return False, "Daily loss limit reached"
+        
+        # Check daily trade limit
+        if self.daily_trades >= self.max_daily_trades:
+            return False, "Daily trade limit reached"
         
         # Check position size
         position_value = signal.get('quantity', 1) * signal.get('entry_price', 0)
@@ -481,16 +874,21 @@ class RiskManager:
         """Update daily loss tracking"""
         self.daily_loss += pnl
     
-    def reset_daily_loss(self):
-        """Reset daily loss tracking"""
+    def increment_daily_trades(self):
+        """Increment daily trade count"""
+        self.daily_trades += 1
+    
+    def reset_daily_metrics(self):
+        """Reset daily metrics"""
         self.daily_loss = 0.0
+        self.daily_trades = 0
 
 # =============================================
-# ALGORITHMIC TRADING ENGINE
+# ALGORITHMIC TRADING ENGINE WITH ACCURACY TRACKING
 # =============================================
 
 class AlgorithmicTradingEngine:
-    """Core algorithmic trading engine"""
+    """Complete Algorithmic Trading Engine with Accuracy Tracking"""
     
     def __init__(self, mode="paper", initial_capital=INITIAL_CAPITAL):
         self.mode = mode
@@ -499,21 +897,45 @@ class AlgorithmicTradingEngine:
         self.positions = {}
         self.trade_history = []
         self.order_queue = queue.Queue()
-        self.market_data = MarketDataStream()
         self.strategies = {}
         self.risk_manager = RiskManager()
-        self.smc_analyzer = SmartMoneyAnalyzer()
         self.data_storage = DataStorage()
         
-        # Performance tracking
-        self.performance = {
-            'total_trades': 0,
-            'winning_trades': 0,
+        # Enhanced accuracy tracking
+        self.accuracy_metrics = {
+            'total_signals': 0,
+            'executed_trades': 0,
+            'profitable_trades': 0,
             'losing_trades': 0,
+            'win_rate': 0.0,
             'total_pnl': 0.0,
-            'daily_pnl': 0.0,
-            'max_drawdown': 0.0,
+            'average_win': 0.0,
+            'average_loss': 0.0,
+            'profit_factor': 0.0,
+            'max_winning_streak': 0,
+            'max_losing_streak': 0,
             'sharpe_ratio': 0.0
+        }
+        
+        # Strategy-specific performance tracking
+        self.strategy_performance = defaultdict(lambda: {
+            'signals': 0,
+            'trades': 0,
+            'wins': 0,
+            'losses': 0,
+            'total_pnl': 0.0,
+            'win_rate': 0.0,
+            'avg_win': 0.0,
+            'avg_loss': 0.0
+        })
+        
+        # Trading session metrics
+        self.session_metrics = {
+            'start_time': datetime.now(),
+            'total_runtime': 0,
+            'trades_per_hour': 0,
+            'best_strategy': None,
+            'worst_strategy': None
         }
         
         # Start trading thread
@@ -527,11 +949,15 @@ class AlgorithmicTradingEngine:
         self._load_historical_data()
     
     def _load_strategies(self):
-        """Load trading strategies"""
+        """Load all trading strategies"""
         self.strategies = {
+            'smc_fvg': SMC_FVG_Strategy(),
+            'smc_orderblock': SMC_OrderBlock_Strategy(),
+            'smc_liquiditygrab': SMC_LiquidityGrab_Strategy(),
             'trend_following': TrendFollowingStrategy(),
             'mean_reversion': MeanReversionStrategy(),
-            'breakout': BreakoutStrategy()
+            'breakout': BreakoutStrategy(),
+            'vwap': VWAP_Strategy()
         }
     
     def _load_historical_data(self):
@@ -540,8 +966,32 @@ class AlgorithmicTradingEngine:
             historical_trades = self.data_storage.load_trades()
             if historical_trades:
                 self.trade_history = historical_trades
+                # Update accuracy metrics from history
+                self._update_accuracy_from_history()
         except:
             pass
+    
+    def _update_accuracy_from_history(self):
+        """Update accuracy metrics from trade history"""
+        for trade in self.trade_history:
+            if trade.get('status') == 'CLOSED':
+                pnl = trade.get('closed_pnl', 0)
+                self.accuracy_metrics['executed_trades'] += 1
+                self.accuracy_metrics['total_pnl'] += pnl
+                
+                if pnl > 0:
+                    self.accuracy_metrics['profitable_trades'] += 1
+                else:
+                    self.accuracy_metrics['losing_trades'] += 1
+                
+                # Update strategy performance
+                strategy = trade.get('strategy', 'unknown')
+                self.strategy_performance[strategy]['trades'] += 1
+                self.strategy_performance[strategy]['total_pnl'] += pnl
+                if pnl > 0:
+                    self.strategy_performance[strategy]['wins'] += 1
+                else:
+                    self.strategy_performance[strategy]['losses'] += 1
     
     def start_trading(self):
         """Start the algorithmic trading system"""
@@ -566,26 +1016,26 @@ class AlgorithmicTradingEngine:
         """Main trading loop"""
         while self.trading_active:
             try:
-                # 1. Update market data
-                self.market_data.simulate_market_data()
-                
-                # 2. Generate trading signals
+                # Generate trading signals
                 signals = self._generate_signals()
                 
-                # 3. Process signals with risk management
+                # Process signals with risk management
                 for signal in signals:
                     valid, message = self.risk_manager.validate_signal(signal, self.positions, self.cash)
                     if valid:
                         self._execute_trade(signal)
                 
-                # 4. Manage existing positions
+                # Manage existing positions
                 self._manage_positions()
                 
-                # 5. Update performance metrics
+                # Update performance metrics
                 self._update_performance()
                 
+                # Update session metrics
+                self._update_session_metrics()
+                
                 # Sleep to control loop frequency
-                time.sleep(1)
+                time.sleep(2)
                 
             except Exception as e:
                 print(f"Trading loop error: {str(e)}")
@@ -595,80 +1045,59 @@ class AlgorithmicTradingEngine:
         """Generate trading signals from all strategies"""
         signals = []
         
-        # Get real-time prices for subscribed symbols
-        symbols = list(self.market_data.subscriptions)
-        if not symbols:
-            symbols = ALL_SYMBOLS[:10]
-        
-        for symbol in symbols:
-            current_price = self.market_data.get_real_time_price(symbol)
-            
-            # Get historical data for analysis
-            historical_data = self._get_historical_data(symbol)
-            
-            # Run each strategy
-            for strategy_name, strategy in self.strategies.items():
-                signal = strategy.generate_signal(symbol, current_price, historical_data)
-                if signal and signal['confidence'] > 0.6:
-                    signals.append(signal)
+        # Analyze all symbols
+        for symbol in ALL_SYMBOLS[:10]:  # Limit to first 10 for performance
+            try:
+                # Get current price
+                current_price = self._get_current_price(symbol)
+                
+                # Get historical data
+                historical_data = self._get_historical_data(symbol)
+                
+                if historical_data.empty:
+                    continue
+                
+                # Run each strategy
+                for strategy_name, strategy in self.strategies.items():
+                    signal = strategy.generate_signal(symbol, current_price, historical_data)
+                    if signal and signal['confidence'] > 0.6:  # Minimum confidence threshold
+                        self.accuracy_metrics['total_signals'] += 1
+                        self.strategy_performance[strategy_name]['signals'] += 1
+                        signals.append(signal)
+                        
+            except Exception as e:
+                continue
         
         return signals
     
-    def _get_historical_data(self, symbol, period='1d', interval='15m'):
+    def _get_current_price(self, symbol):
+        """Get current price for symbol"""
+        try:
+            ticker = yf.Ticker(symbol)
+            data = ticker.history(period='1d', interval='1m')
+            if not data.empty:
+                return float(data['Close'].iloc[-1])
+        except:
+            pass
+        
+        # Synthetic price for demo
+        base_prices = {
+            'BTC-USD': 45000,
+            'ETH-USD': 2500,
+            'AAPL': 180,
+            'GC=F': 1950,
+            'EURUSD=X': 1.08
+        }
+        return base_prices.get(symbol, 100.0)
+    
+    def _get_historical_data(self, symbol, period='7d', interval='15m'):
         """Get historical market data"""
         try:
             ticker = yf.Ticker(symbol)
             data = ticker.history(period=period, interval=interval)
             return data
         except:
-            return self._generate_synthetic_data(symbol, period)
-    
-    def _generate_synthetic_data(self, symbol, period='1d'):
-        """Generate synthetic market data"""
-        if period == '1d':
-            periods = 96
-        elif period == '7d':
-            periods = 672
-        else:
-            periods = 96
-        
-        dates = pd.date_range(end=datetime.now(), periods=periods, freq='15min')
-        
-        # Base price based on symbol
-        if "BTC" in symbol:
-            base_price = 45000
-            volatility = 0.02
-        elif "ETH" in symbol:
-            base_price = 2500
-            volatility = 0.025
-        elif "AAPL" in symbol:
-            base_price = 180
-            volatility = 0.015
-        else:
-            base_price = 100
-            volatility = 0.01
-        
-        # Generate price series
-        np.random.seed(hash(symbol) % 10000)
-        returns = np.random.normal(0, volatility/16, periods)
-        prices = base_price * np.cumprod(1 + returns)
-        
-        # Generate OHLC data
-        opens = prices * (1 + np.random.normal(0, 0.001, periods))
-        highs = opens * (1 + abs(np.random.normal(0, 0.005, periods)))
-        lows = opens * (1 - abs(np.random.normal(0, 0.005, periods)))
-        closes = prices
-        
-        # Add volume
-        volume = np.random.randint(1000, 100000, periods) * (1 + abs(returns) * 10)
-        
-        return pd.DataFrame({
-            'Open': opens,
-            'High': highs,
-            'Low': lows,
-            'Close': closes,
-            'Volume': volume
-        }, index=dates)
+            return pd.DataFrame()
     
     def _execute_trade(self, signal):
         """Execute a trade based on signal"""
@@ -681,9 +1110,9 @@ class AlgorithmicTradingEngine:
                 return False, "Invalid position size"
             
             # Get current price
-            current_price = self.market_data.get_real_time_price(symbol)
+            current_price = self._get_current_price(symbol)
             
-            # Paper trading execution
+            # Execute paper trade
             return self._execute_paper_trade(signal, quantity, current_price)
                 
         except Exception as e:
@@ -691,7 +1120,7 @@ class AlgorithmicTradingEngine:
     
     def _calculate_position_size(self, signal):
         """Calculate position size based on risk management"""
-        current_price = self.market_data.get_real_time_price(signal['symbol'])
+        current_price = self._get_current_price(signal['symbol'])
         stop_loss = signal.get('stop_loss', current_price * 0.95)
         
         risk_per_share = abs(current_price - stop_loss)
@@ -724,7 +1153,9 @@ class AlgorithmicTradingEngine:
             'timestamp': datetime.now(),
             'status': 'OPEN',
             'pnl': 0.0,
-            'paper_trade': True
+            'paper_trade': True,
+            'confidence': signal.get('confidence', 0.5),
+            'risk_reward': self._calculate_risk_reward(signal, current_price)
         }
         
         # Update cash (simulated)
@@ -737,10 +1168,30 @@ class AlgorithmicTradingEngine:
         self.positions[trade_id] = trade
         self.trade_history.append(trade)
         
+        # Update risk manager
+        self.risk_manager.increment_daily_trades()
+        
         # Save trades
         self.data_storage.save_trades(self.trade_history)
         
         return True, f"Paper trade executed: {signal['action']} {quantity} {signal['symbol']} @ ${current_price:.2f}"
+    
+    def _calculate_risk_reward(self, signal, entry_price):
+        """Calculate risk-reward ratio"""
+        stop_loss = signal.get('stop_loss', entry_price * 0.95)
+        take_profit = signal.get('take_profit', entry_price * 1.05)
+        
+        if signal['action'] == 'BUY':
+            risk = entry_price - stop_loss
+            reward = take_profit - entry_price
+        else:
+            risk = stop_loss - entry_price
+            reward = entry_price - take_profit
+        
+        if risk <= 0:
+            return 0
+        
+        return reward / risk
     
     def _manage_positions(self):
         """Manage existing positions (stop loss, take profit)"""
@@ -750,7 +1201,7 @@ class AlgorithmicTradingEngine:
             if position['status'] != 'OPEN':
                 continue
             
-            current_price = self.market_data.get_real_time_price(position['symbol'])
+            current_price = self._get_current_price(position['symbol'])
             position['current_price'] = current_price
             
             # Calculate P&L
@@ -783,7 +1234,7 @@ class AlgorithmicTradingEngine:
             return False
         
         position = self.positions[trade_id]
-        current_price = self.market_data.get_real_time_price(position['symbol'])
+        current_price = self._get_current_price(position['symbol'])
         
         # Calculate final P&L
         if position['action'] == 'BUY':
@@ -802,15 +1253,27 @@ class AlgorithmicTradingEngine:
         position['closed_pnl'] = pnl
         position['exit_reason'] = reason
         
-        # Update performance
-        self.performance['total_trades'] += 1
-        self.performance['total_pnl'] += pnl
-        self.performance['daily_pnl'] += pnl
+        # Update accuracy metrics
+        self.accuracy_metrics['executed_trades'] += 1
+        self.accuracy_metrics['total_pnl'] += pnl
         
         if pnl > 0:
-            self.performance['winning_trades'] += 1
+            self.accuracy_metrics['profitable_trades'] += 1
         else:
-            self.performance['losing_trades'] += 1
+            self.accuracy_metrics['losing_trades'] += 1
+        
+        # Update risk manager
+        self.risk_manager.update_daily_loss(pnl)
+        
+        # Update strategy performance
+        strategy = position.get('strategy', 'unknown')
+        self.strategy_performance[strategy]['trades'] += 1
+        self.strategy_performance[strategy]['total_pnl'] += pnl
+        
+        if pnl > 0:
+            self.strategy_performance[strategy]['wins'] += 1
+        else:
+            self.strategy_performance[strategy]['losses'] += 1
         
         # Remove from open positions
         del self.positions[trade_id]
@@ -822,17 +1285,45 @@ class AlgorithmicTradingEngine:
     
     def _update_performance(self):
         """Update performance metrics"""
-        if self.performance['total_trades'] > 0:
-            win_rate = self.performance['winning_trades'] / self.performance['total_trades']
-            
-            # Calculate Sharpe ratio (simplified)
-            if len(self.trade_history) >= 10:
-                recent_pnls = [t.get('closed_pnl', 0) for t in self.trade_history[-10:] if 'closed_pnl' in t]
-                if len(recent_pnls) >= 5:
-                    avg_return = np.mean(recent_pnls)
-                    std_return = np.std(recent_pnls)
-                    if std_return > 0:
-                        self.performance['sharpe_ratio'] = avg_return / std_return * np.sqrt(252)
+        # Calculate win rate
+        total_trades = self.accuracy_metrics['executed_trades']
+        winning_trades = self.accuracy_metrics['profitable_trades']
+        
+        if total_trades > 0:
+            self.accuracy_metrics['win_rate'] = winning_trades / total_trades
+        
+        # Calculate profit factor
+        if self.accuracy_metrics['losing_trades'] > 0:
+            avg_win = self.accuracy_metrics['total_pnl'] / max(1, winning_trades)
+            avg_loss = abs(self.accuracy_metrics['total_pnl']) / max(1, self.accuracy_metrics['losing_trades'])
+            self.accuracy_metrics['profit_factor'] = avg_win / avg_loss if avg_loss > 0 else float('inf')
+        
+        # Update strategy win rates
+        for strategy, perf in self.strategy_performance.items():
+            total = perf['wins'] + perf['losses']
+            if total > 0:
+                perf['win_rate'] = perf['wins'] / total
+                if perf['wins'] > 0:
+                    perf['avg_win'] = perf['total_pnl'] / perf['wins']
+                if perf['losses'] > 0:
+                    perf['avg_loss'] = abs(perf['total_pnl']) / perf['losses']
+    
+    def _update_session_metrics(self):
+        """Update session metrics"""
+        runtime = (datetime.now() - self.session_metrics['start_time']).total_seconds() / 3600
+        self.session_metrics['total_runtime'] = runtime
+        
+        if runtime > 0:
+            self.session_metrics['trades_per_hour'] = self.accuracy_metrics['executed_trades'] / runtime
+        
+        # Find best and worst strategies
+        if self.strategy_performance:
+            strategies_with_trades = {k: v for k, v in self.strategy_performance.items() if v['trades'] > 0}
+            if strategies_with_trades:
+                self.session_metrics['best_strategy'] = max(strategies_with_trades.items(), 
+                                                           key=lambda x: x[1]['win_rate'])[0]
+                self.session_metrics['worst_strategy'] = min(strategies_with_trades.items(), 
+                                                           key=lambda x: x[1]['win_rate'])[0]
     
     def get_portfolio_summary(self):
         """Get portfolio summary"""
@@ -845,38 +1336,50 @@ class AlgorithmicTradingEngine:
                 total_value += position_value
                 open_pnl += position['pnl']
         
-        total_trades = self.performance['total_trades']
-        winning_trades = self.performance['winning_trades']
-        win_rate = winning_trades / max(1, total_trades)
-        
         return {
             'cash': self.cash,
             'total_value': total_value,
             'open_positions': len(self.positions),
             'open_pnl': open_pnl,
-            'total_pnl': self.performance['total_pnl'],
-            'daily_pnl': self.performance['daily_pnl'],
-            'win_rate': win_rate,
-            'total_trades': total_trades,
-            'sharpe_ratio': self.performance['sharpe_ratio']
+            'total_pnl': self.accuracy_metrics['total_pnl'],
+            'win_rate': self.accuracy_metrics['win_rate'],
+            'total_trades': self.accuracy_metrics['executed_trades'],
+            'profit_factor': self.accuracy_metrics['profit_factor'],
+            'sharpe_ratio': self.accuracy_metrics['sharpe_ratio']
         }
     
     def get_open_positions(self):
         """Get all open positions"""
         return list(self.positions.values())
     
-    def get_trade_history(self, limit=50):
+    def get_trade_history(self, limit=100):
         """Get trade history"""
         return self.trade_history[-limit:] if self.trade_history else []
+    
+    def get_strategy_performance(self):
+        """Get detailed strategy performance"""
+        return dict(self.strategy_performance)
+    
+    def get_accuracy_report(self):
+        """Get comprehensive accuracy report"""
+        return {
+            'accuracy_metrics': self.accuracy_metrics,
+            'session_metrics': self.session_metrics,
+            'strategy_performance': dict(self.strategy_performance)
+        }
     
     def close_all_positions(self):
         """Close all open positions"""
         closed = []
         for trade_id in list(self.positions.keys()):
-            current_price = self.market_data.get_real_time_price(self.positions[trade_id]['symbol'])
+            current_price = self._get_current_price(self.positions[trade_id]['symbol'])
             if self._close_position(trade_id, 'MANUAL_CLOSE_ALL'):
                 closed.append(trade_id)
         return len(closed)
+    
+    def reset_daily_metrics(self):
+        """Reset daily metrics"""
+        self.risk_manager.reset_daily_metrics()
 
 # =============================================
 # STREAMLIT UI COMPONENTS
@@ -887,7 +1390,7 @@ def create_header():
     st.markdown("""
     <div style="text-align: center; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 10px; margin-bottom: 20px;">
         <h1 style="color: white; margin: 0;">🤖 RANTV ALGORITHMIC TRADING SYSTEM</h1>
-        <p style="color: rgba(255,255,255,0.9); margin: 5px 0 0 0;">Real-time Algorithmic Trading with Multiple Strategies</p>
+        <p style="color: rgba(255,255,255,0.9); margin: 5px 0 0 0;">Smart Money Concept & Multi-Strategy Trading with Accuracy Tracking</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -895,12 +1398,11 @@ def create_trading_control_panel(trading_engine):
     """Create trading control panel"""
     st.subheader("🎮 Trading Controls")
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         if not trading_engine.trading_active:
             if st.button("🚀 Start Algorithmic Trading", use_container_width=True, type="primary"):
-                trading_engine.market_data.subscribe(ALL_SYMBOLS[:20])
                 if trading_engine.start_trading():
                     st.success("Algorithmic trading started!")
                     st.rerun()
@@ -911,7 +1413,7 @@ def create_trading_control_panel(trading_engine):
                 st.rerun()
     
     with col2:
-        if st.button("🔄 Update All Positions", use_container_width=True):
+        if st.button("🔄 Update Positions", use_container_width=True):
             trading_engine._manage_positions()
             st.success("Positions updated!")
             st.rerun()
@@ -920,6 +1422,12 @@ def create_trading_control_panel(trading_engine):
         if st.button("🗑️ Close All Positions", use_container_width=True):
             closed = trading_engine.close_all_positions()
             st.success(f"Closed {closed} positions!")
+            st.rerun()
+    
+    with col4:
+        if st.button("📊 Reset Daily Metrics", use_container_width=True):
+            trading_engine.reset_daily_metrics()
+            st.success("Daily metrics reset!")
             st.rerun()
 
 def create_portfolio_dashboard(trading_engine):
@@ -957,20 +1465,20 @@ def create_portfolio_dashboard(trading_engine):
             delta_color=pnl_color
         )
     
-    # Performance metrics
-    st.subheader("📈 Performance Metrics")
-    perf_col1, perf_col2, perf_col3, perf_col4 = st.columns(4)
+    # Accuracy metrics
+    st.subheader("🎯 Accuracy Metrics")
+    acc_col1, acc_col2, acc_col3, acc_col4 = st.columns(4)
     
-    with perf_col1:
+    with acc_col1:
         st.metric("Win Rate", f"{portfolio['win_rate']:.1%}")
     
-    with perf_col2:
+    with acc_col2:
         st.metric("Total Trades", portfolio['total_trades'])
     
-    with perf_col3:
-        st.metric("Daily P&L", f"${portfolio['daily_pnl']:+,.2f}")
+    with acc_col3:
+        st.metric("Profit Factor", f"{portfolio['profit_factor']:.2f}")
     
-    with perf_col4:
+    with acc_col4:
         st.metric("Sharpe Ratio", f"{portfolio['sharpe_ratio']:.2f}")
 
 def create_positions_dashboard(trading_engine):
@@ -992,7 +1500,7 @@ def create_positions_dashboard(trading_engine):
                 st.write(f"**{position['symbol']}** - <span style='color:{action_color};'>{position['action']}</span>", 
                         unsafe_allow_html=True)
                 st.write(f"Qty: {position['quantity']} | Entry: ${position['entry_price']:.2f}")
-                st.write(f"Strategy: {position['strategy']}")
+                st.write(f"Strategy: {position['strategy']} | Confidence: {position.get('confidence', 0.5):.1%}")
             
             with col2:
                 current_price = position.get('current_price', position['entry_price'])
@@ -1016,57 +1524,9 @@ def create_positions_dashboard(trading_engine):
             
             st.divider()
 
-def create_signal_monitor(trading_engine):
-    """Create real-time signal monitor"""
-    st.subheader("🚦 Real-time Signal Monitor")
-    
-    # Generate sample signals
-    signals = []
-    for symbol in ALL_SYMBOLS[:10]:
-        current_price = trading_engine.market_data.get_real_time_price(symbol)
-        historical_data = trading_engine._get_historical_data(symbol)
-        
-        for strategy in trading_engine.strategies.values():
-            signal = strategy.generate_signal(symbol, current_price, historical_data)
-            if signal and signal['confidence'] > 0.6:
-                signals.append(signal)
-    
-    if not signals:
-        st.info("No active signals at the moment")
-        return
-    
-    # Display signals
-    for signal in signals[:5]:
-        with st.container():
-            col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
-            
-            with col1:
-                action_emoji = "🟢" if signal['action'] == 'BUY' else "🔴"
-                st.write(f"**{action_emoji} {signal['symbol']} - {signal['action']}**")
-                st.write(f"Strategy: {signal['strategy']}")
-                st.write(f"Confidence: {signal['confidence']:.1%}")
-            
-            with col2:
-                st.write(f"Price: ${signal.get('entry_price', 0):.2f}")
-            
-            with col3:
-                st.write(f"SL: ${signal.get('stop_loss', 0):.2f}")
-                st.write(f"TP: ${signal.get('take_profit', 0):.2f}")
-            
-            with col4:
-                if st.button("Trade", key=f"trade_{signal['symbol']}_{signal['action']}"):
-                    success, message = trading_engine._execute_trade(signal)
-                    if success:
-                        st.success(message)
-                        st.rerun()
-                    else:
-                        st.error(message)
-            
-            st.divider()
-
-def create_performance_analytics(trading_engine):
-    """Create performance analytics dashboard"""
-    st.subheader("📈 Performance Analytics")
+def create_trading_history_dashboard(trading_engine):
+    """Create comprehensive trading history dashboard"""
+    st.subheader("📋 Trading History & Accuracy Analysis")
     
     # Get trade history
     trade_history = trading_engine.get_trade_history(100)
@@ -1075,82 +1535,294 @@ def create_performance_analytics(trading_engine):
         st.info("No trade history available")
         return
     
-    # Convert to DataFrame
-    trades_df = pd.DataFrame([
-        {
-            'Date': trade['timestamp'],
-            'Symbol': trade['symbol'],
-            'Action': trade['action'],
-            'Entry': trade['entry_price'],
-            'Exit': trade.get('exit_price', None),
-            'P&L': trade.get('closed_pnl', trade.get('pnl', 0)),
-            'Strategy': trade['strategy'],
-            'Status': trade['status']
-        }
-        for trade in trade_history
-    ])
+    # Create tabs for different views
+    tab1, tab2, tab3, tab4 = st.tabs(["All Trades", "Performance Charts", "Strategy Analysis", "Accuracy Report"])
     
-    if trades_df.empty:
-        st.info("No trade data to display")
-        return
-    
-    # Performance metrics
-    st.subheader("📊 Trade Statistics")
-    
-    closed_trades = trades_df[trades_df['Status'] == 'CLOSED']
-    if not closed_trades.empty:
-        winning_trades = closed_trades[closed_trades['P&L'] > 0]
-        losing_trades = closed_trades[closed_trades['P&L'] <= 0]
+    with tab1:
+        # Display all trades in a table
+        st.subheader("📊 All Trades")
         
+        # Prepare data for display
+        history_data = []
+        for trade in trade_history:
+            history_data.append({
+                'ID': trade['trade_id'][-8:],
+                'Symbol': trade['symbol'],
+                'Action': trade['action'],
+                'Strategy': trade['strategy'],
+                'Entry': f"${trade['entry_price']:.2f}",
+                'Exit': f"${trade.get('exit_price', 'N/A'):.2f}" if trade.get('exit_price') else "N/A",
+                'P&L': f"${trade.get('closed_pnl', trade.get('pnl', 0)):+,.2f}",
+                'Status': trade['status'],
+                'Reason': trade.get('exit_reason', 'N/A'),
+                'Date': trade['timestamp'].strftime('%Y-%m-%d %H:%M') if isinstance(trade['timestamp'], datetime) else trade['timestamp']
+            })
+        
+        if history_data:
+            st.dataframe(pd.DataFrame(history_data), use_container_width=True, height=400)
+            
+            # Export option
+            if st.button("📥 Export Trade History"):
+                df = pd.DataFrame(history_data)
+                csv = df.to_csv(index=False)
+                st.download_button(
+                    label="Download CSV",
+                    data=csv,
+                    file_name="trade_history.csv",
+                    mime="text/csv"
+                )
+    
+    with tab2:
+        # Performance charts
+        st.subheader("📈 Performance Charts")
+        
+        # Filter closed trades
+        closed_trades = [t for t in trade_history if t.get('status') == 'CLOSED']
+        
+        if closed_trades:
+            # Prepare data for charts
+            df_trades = pd.DataFrame([
+                {
+                    'Date': t['timestamp'] if isinstance(t['timestamp'], datetime) else datetime.now(),
+                    'P&L': t.get('closed_pnl', 0),
+                    'Strategy': t.get('strategy', 'unknown'),
+                    'Symbol': t['symbol'],
+                    'Action': t['action']
+                }
+                for t in closed_trades
+            ])
+            
+            if not df_trades.empty:
+                df_trades = df_trades.sort_values('Date')
+                df_trades['Cumulative P&L'] = df_trades['P&L'].cumsum()
+                df_trades['Rolling Win Rate'] = (df_trades['P&L'] > 0).rolling(window=10).mean()
+                
+                # Cumulative P&L chart
+                fig1 = go.Figure()
+                fig1.add_trace(go.Scatter(
+                    x=df_trades['Date'],
+                    y=df_trades['Cumulative P&L'],
+                    mode='lines+markers',
+                    name='Cumulative P&L',
+                    line=dict(color='green' if df_trades['Cumulative P&L'].iloc[-1] > 0 else 'red', width=2)
+                ))
+                fig1.update_layout(
+                    title="Cumulative P&L Over Time",
+                    xaxis_title="Date",
+                    yaxis_title="Cumulative P&L ($)",
+                    height=400
+                )
+                st.plotly_chart(fig1, use_container_width=True)
+                
+                # Win rate rolling chart
+                fig2 = go.Figure()
+                fig2.add_trace(go.Scatter(
+                    x=df_trades['Date'],
+                    y=df_trades['Rolling Win Rate'] * 100,
+                    mode='lines',
+                    name='Rolling Win Rate (10 trades)',
+                    line=dict(color='blue', width=2)
+                ))
+                fig2.add_hline(y=50, line_dash="dash", line_color="red")
+                fig2.update_layout(
+                    title="Rolling Win Rate (10-Trade Window)",
+                    xaxis_title="Date",
+                    yaxis_title="Win Rate (%)",
+                    height=400,
+                    yaxis=dict(range=[0, 100])
+                )
+                st.plotly_chart(fig2, use_container_width=True)
+                
+                # P&L distribution
+                fig3 = px.histogram(df_trades, x='P&L', 
+                                   title="P&L Distribution",
+                                   color_discrete_sequence=['green' if x > 0 else 'red' for x in df_trades['P&L']],
+                                   nbins=20)
+                fig3.update_layout(height=400)
+                st.plotly_chart(fig3, use_container_width=True)
+    
+    with tab3:
+        # Strategy analysis
+        st.subheader("🎯 Strategy Performance Analysis")
+        
+        strategy_perf = trading_engine.get_strategy_performance()
+        
+        if strategy_perf:
+            # Prepare strategy performance data
+            perf_data = []
+            for strategy, data in strategy_perf.items():
+                if data['trades'] > 0:
+                    perf_data.append({
+                        'Strategy': strategy,
+                        'Trades': data['trades'],
+                        'Wins': data['wins'],
+                        'Losses': data['losses'],
+                        'Win Rate': f"{data['win_rate']:.1%}",
+                        'Total P&L': f"${data['total_pnl']:+,.2f}",
+                        'Avg Win': f"${data['avg_win']:+,.2f}" if data['wins'] > 0 else "N/A",
+                        'Avg Loss': f"${data['avg_loss']:+,.2f}" if data['losses'] > 0 else "N/A"
+                    })
+            
+            if perf_data:
+                df_perf = pd.DataFrame(perf_data)
+                st.dataframe(df_perf, use_container_width=True)
+                
+                # Strategy comparison chart
+                fig = px.bar(df_perf, x='Strategy', y='Win Rate',
+                           title="Strategy Win Rate Comparison",
+                           color='Total P&L',
+                           color_continuous_scale='RdYlGn')
+                fig.update_layout(height=400)
+                st.plotly_chart(fig, use_container_width=True)
+    
+    with tab4:
+        # Accuracy report
+        st.subheader("📊 Comprehensive Accuracy Report")
+        
+        accuracy_report = trading_engine.get_accuracy_report()
+        accuracy_metrics = accuracy_report['accuracy_metrics']
+        session_metrics = accuracy_report['session_metrics']
+        
+        # Overall accuracy metrics
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            st.metric("Total Trades", len(closed_trades))
+            st.metric("Total Signals", accuracy_metrics['total_signals'])
+            st.metric("Signal to Trade Ratio", 
+                     f"{(accuracy_metrics['executed_trades'] / max(1, accuracy_metrics['total_signals'])):.1%}")
         
         with col2:
-            win_rate = len(winning_trades) / len(closed_trades) if len(closed_trades) > 0 else 0
-            st.metric("Win Rate", f"{win_rate:.1%}")
+            st.metric("Win Rate", f"{accuracy_metrics['win_rate']:.1%}")
+            st.metric("Profit Factor", f"{accuracy_metrics['profit_factor']:.2f}")
         
         with col3:
-            avg_win = winning_trades['P&L'].mean() if len(winning_trades) > 0 else 0
-            st.metric("Avg Win", f"${avg_win:+,.2f}")
+            st.metric("Total P&L", f"${accuracy_metrics['total_pnl']:+,.2f}")
+            st.metric("Avg Win", f"${accuracy_metrics['average_win']:+,.2f}")
         
         with col4:
-            avg_loss = losing_trades['P&L'].mean() if len(losing_trades) > 0 else 0
-            st.metric("Avg Loss", f"${avg_loss:+,.2f}")
+            st.metric("Best Strategy", session_metrics.get('best_strategy', 'N/A'))
+            st.metric("Worst Strategy", session_metrics.get('worst_strategy', 'N/A'))
+        
+        # Session metrics
+        st.subheader("⏱️ Session Metrics")
+        sess_col1, sess_col2, sess_col3 = st.columns(3)
+        
+        with sess_col1:
+            st.metric("Total Runtime", f"{session_metrics['total_runtime']:.1f} hours")
+        
+        with sess_col2:
+            st.metric("Trades per Hour", f"{session_metrics['trades_per_hour']:.1f}")
+        
+        with sess_col3:
+            start_time = session_metrics['start_time']
+            if isinstance(start_time, str):
+                start_time = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+            st.metric("Session Start", start_time.strftime('%Y-%m-%d %H:%M'))
 
-def create_strategy_configuration(trading_engine):
-    """Create strategy configuration panel"""
-    st.subheader("🎯 Strategy Configuration")
+def create_signal_generator(trading_engine):
+    """Create signal generator dashboard"""
+    st.subheader("🚦 Signal Generator")
     
     # Strategy selection
     selected_strategies = st.multiselect(
-        "Select Active Strategies",
+        "Select Strategies for Scanning",
         list(trading_engine.strategies.keys()),
-        default=['trend_following', 'mean_reversion', 'breakout']
+        default=list(trading_engine.strategies.keys())[:3]
     )
     
-    # Strategy parameters
-    st.subheader("⚙️ Strategy Parameters")
+    # Symbol selection
+    selected_symbols = st.multiselect(
+        "Select Symbols to Scan",
+        ALL_SYMBOLS,
+        default=ALL_SYMBOLS[:5]
+    )
     
-    for strategy_name in selected_strategies:
-        strategy = trading_engine.strategies[strategy_name]
+    # Confidence filter
+    min_confidence = st.slider(
+        "Minimum Confidence",
+        min_value=0.5,
+        max_value=0.95,
+        value=0.65,
+        step=0.05
+    )
+    
+    if st.button("🔍 Scan for Signals", type="primary", use_container_width=True):
+        if not selected_symbols or not selected_strategies:
+            st.warning("Please select at least one symbol and one strategy")
+            return
         
-        with st.expander(f"{strategy.name} Settings"):
-            col1, col2 = st.columns(2)
+        with st.spinner("Scanning for trading signals..."):
+            signals = []
+            for symbol in selected_symbols:
+                current_price = trading_engine._get_current_price(symbol)
+                historical_data = trading_engine._get_historical_data(symbol)
+                
+                if historical_data.empty:
+                    continue
+                
+                for strategy_name in selected_strategies:
+                    strategy = trading_engine.strategies[strategy_name]
+                    signal = strategy.generate_signal(symbol, current_price, historical_data)
+                    if signal and signal['confidence'] >= min_confidence:
+                        signals.append(signal)
             
-            with col1:
-                min_confidence = st.slider(
-                    f"Minimum Confidence ({strategy.name})",
-                    min_value=0.5,
-                    max_value=0.95,
-                    value=0.65,
-                    step=0.05,
-                    key=f"conf_{strategy_name}"
-                )
+            if signals:
+                st.success(f"Found {len(signals)} signals with confidence ≥ {min_confidence}")
+                
+                # Display signals
+                for i, signal in enumerate(signals[:10]):
+                    with st.container():
+                        col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+                        
+                        with col1:
+                            action_emoji = "🟢" if signal['action'] == 'BUY' else "🔴"
+                            st.write(f"**{action_emoji} {signal['symbol']} - {signal['action']}**")
+                            st.write(f"Strategy: {signal['strategy']}")
+                            st.write(f"Confidence: {signal['confidence']:.1%}")
+                        
+                        with col2:
+                            st.write(f"Price: ${trading_engine._get_current_price(signal['symbol']):.2f}")
+                        
+                        with col3:
+                            st.write(f"SL: ${signal.get('stop_loss', 0):.2f}")
+                            st.write(f"TP: ${signal.get('take_profit', 0):.2f}")
+                        
+                        with col4:
+                            if st.button("Execute", key=f"exec_{i}"):
+                                success, message = trading_engine._execute_trade(signal)
+                                if success:
+                                    st.success(message)
+                                    st.rerun()
+                                else:
+                                    st.error(message)
+                        
+                        st.divider()
+            else:
+                st.info("No signals found with current parameters")
+
+def create_strategy_configuration(trading_engine):
+    """Create strategy configuration panel"""
+    st.subheader("⚙️ Strategy Configuration")
+    
+    # Strategy selection and weighting
+    st.subheader("📊 Strategy Weighting")
+    
+    strategies = list(trading_engine.strategies.keys())
+    weights = {}
+    
+    for strategy in strategies:
+        weight = st.slider(
+            f"Weight: {strategy}",
+            min_value=0,
+            max_value=10,
+            value=5,
+            step=1,
+            key=f"weight_{strategy}"
+        )
+        weights[strategy] = weight
     
     # Risk parameters
-    st.subheader("🛡️ Risk Parameters")
+    st.subheader("🛡️ Risk Management")
     
     risk_col1, risk_col2, risk_col3 = st.columns(3)
     
@@ -1173,16 +1845,17 @@ def create_strategy_configuration(trading_engine):
         )
     
     with risk_col3:
-        max_positions = st.number_input(
-            "Max Positions",
-            min_value=1,
+        max_daily_trades = st.number_input(
+            "Max Daily Trades",
+            min_value=5,
             max_value=50,
-            value=10,
+            value=15,
             step=1
         )
     
     if st.button("💾 Save Configuration", type="primary"):
         trading_engine.risk_manager.max_daily_loss = -daily_loss_limit / 100
+        trading_engine.risk_manager.max_daily_trades = max_daily_trades
         st.success("Configuration saved!")
 
 # =============================================
@@ -1226,55 +1899,48 @@ def main():
             default=["CRYPTO", "STOCKS"]
         )
         
-        # Symbol selection
-        st.subheader("🎯 Symbol Selection")
-        
-        selected_symbols = st.multiselect(
-            "Select Symbols to Monitor",
-            ALL_SYMBOLS,
-            default=ALL_SYMBOLS[:10]
-        )
-        
-        if st.button("📡 Subscribe to Symbols", use_container_width=True):
-            trading_engine = st.session_state.trading_engine
-            trading_engine.market_data.subscribe(selected_symbols)
-            st.success(f"Subscribed to {len(selected_symbols)} symbols")
-        
         # System controls
         st.subheader("🔄 System Controls")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            if st.button("Reset Session", use_container_width=True):
+            if st.button("New Session", use_container_width=True):
                 st.session_state.trading_engine = AlgorithmicTradingEngine(mode="paper", initial_capital=initial_capital)
                 st.success("New trading session started!")
                 st.rerun()
         
         with col2:
-            if st.button("Clear History", use_container_width=True, type="secondary"):
+            if st.button("Export Data", use_container_width=True, type="secondary"):
                 trading_engine = st.session_state.trading_engine
-                trading_engine.trade_history = []
-                trading_engine.positions = {}
-                st.success("Trade history cleared!")
-                st.rerun()
+                if trading_engine.trade_history:
+                    df = pd.DataFrame(trading_engine.trade_history)
+                    csv = df.to_csv(index=False)
+                    st.download_button(
+                        label="Download All Data",
+                        data=csv,
+                        file_name="trading_data.csv",
+                        mime="text/csv"
+                    )
         
         # System status
         st.markdown("---")
         trading_engine = st.session_state.trading_engine
         status_color = "🟢" if trading_engine.trading_active else "🔴"
         st.markdown(f"**System Status:** {status_color} {'Running' if trading_engine.trading_active else 'Stopped'}")
-        st.markdown(f"**Mode:** {'Paper Trading'}")
+        st.markdown(f"**Mode:** Paper Trading")
+        st.markdown(f"**Strategies Active:** {len(trading_engine.strategies)}")
         st.markdown(f"**Last Update:** {datetime.now().strftime('%H:%M:%S')}")
     
     # Main content with tabs
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "🎮 Control Panel",
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        "🎮 Control",
         "📊 Portfolio",
         "💰 Positions",
+        "📋 History",
         "🚦 Signals",
-        "📈 Analytics",
-        "⚙️ Configuration"
+        "⚙️ Config",
+        "📈 Analytics"
     ])
     
     trading_engine = st.session_state.trading_engine
@@ -1287,6 +1953,7 @@ def main():
         st.subheader("⚡ Quick Stats")
         
         portfolio = trading_engine.get_portfolio_summary()
+        accuracy_report = trading_engine.get_accuracy_report()
         
         stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
         
@@ -1294,10 +1961,10 @@ def main():
             st.metric("Active Strategies", len(trading_engine.strategies))
         
         with stat_col2:
-            st.metric("Subscribed Symbols", len(trading_engine.market_data.subscriptions))
+            st.metric("Total Signals", accuracy_report['accuracy_metrics']['total_signals'])
         
         with stat_col3:
-            st.metric("Queue Size", trading_engine.order_queue.qsize())
+            st.metric("Executed Trades", portfolio['total_trades'])
         
         with stat_col4:
             st.metric("System Status", "Running" if trading_engine.trading_active else "Stopped")
@@ -1305,18 +1972,37 @@ def main():
     with tab2:
         # Portfolio Dashboard
         create_portfolio_dashboard(trading_engine)
+    
+    with tab3:
+        # Positions Dashboard
+        create_positions_dashboard(trading_engine)
+    
+    with tab4:
+        # Trading History Dashboard
+        create_trading_history_dashboard(trading_engine)
+    
+    with tab5:
+        # Signal Generator
+        create_signal_generator(trading_engine)
+    
+    with tab6:
+        # Configuration
+        create_strategy_configuration(trading_engine)
+    
+    with tab7:
+        # Real-time Analytics
+        st.subheader("📈 Real-time Analytics")
         
         # Market overview
         st.subheader("🌐 Market Overview")
         
-        # Display key market prices
         key_symbols = ["BTC-USD", "ETH-USD", "AAPL", "GC=F", "EURUSD=X"]
         cols = st.columns(len(key_symbols))
         
         for i, symbol in enumerate(key_symbols):
             with cols[i]:
                 try:
-                    price = trading_engine.market_data.get_real_time_price(symbol)
+                    price = trading_engine._get_current_price(symbol)
                     change = np.random.uniform(-2, 2)
                     st.metric(
                         symbol,
@@ -1325,66 +2011,43 @@ def main():
                     )
                 except:
                     st.metric(symbol, "N/A")
-    
-    with tab3:
-        # Positions Dashboard
-        create_positions_dashboard(trading_engine)
-    
-    with tab4:
-        # Signal Monitor
-        create_signal_monitor(trading_engine)
         
-        # Manual trading
-        st.subheader("👨‍💼 Manual Trading")
+        # Strategy heatmap
+        st.subheader("🎯 Strategy Performance Heatmap")
         
-        with st.form("manual_trade_form"):
-            col1, col2, col3 = st.columns(3)
+        strategy_perf = trading_engine.get_strategy_performance()
+        if strategy_perf:
+            perf_data = []
+            for strategy, data in strategy_perf.items():
+                if data['trades'] > 0:
+                    perf_data.append({
+                        'Strategy': strategy,
+                        'Win Rate': data['win_rate'],
+                        'Trades': data['trades'],
+                        'Total P&L': data['total_pnl']
+                    })
             
-            with col1:
-                manual_symbol = st.selectbox("Symbol", ALL_SYMBOLS)
-                manual_action = st.selectbox("Action", ["BUY", "SELL"])
-            
-            with col2:
-                manual_quantity = st.number_input("Quantity", min_value=1, value=1)
-                manual_price = st.number_input("Price", min_value=0.01, value=100.0, step=0.01)
-            
-            with col3:
-                manual_sl = st.number_input("Stop Loss", min_value=0.01, value=95.0, step=0.01)
-                manual_tp = st.number_input("Take Profit", min_value=0.01, value=105.0, step=0.01)
-            
-            submitted = st.form_submit_button("Execute Manual Trade")
-            
-            if submitted:
-                signal = {
-                    'symbol': manual_symbol,
-                    'action': manual_action,
-                    'strategy': 'MANUAL',
-                    'confidence': 1.0,
-                    'stop_loss': manual_sl,
-                    'take_profit': manual_tp
-                }
+            if perf_data:
+                df_heatmap = pd.DataFrame(perf_data)
                 
-                success, message = trading_engine._execute_trade(signal)
-                if success:
-                    st.success(message)
-                    st.rerun()
-                else:
-                    st.error(message)
-    
-    with tab5:
-        # Performance Analytics
-        create_performance_analytics(trading_engine)
-    
-    with tab6:
-        # Configuration
-        create_strategy_configuration(trading_engine)
+                # Create heatmap
+                fig = px.imshow(
+                    df_heatmap[['Win Rate', 'Trades', 'Total P&L']].T,
+                    labels=dict(x="Strategy", y="Metric", color="Value"),
+                    x=df_heatmap['Strategy'].tolist(),
+                    y=['Win Rate', 'Trades', 'Total P&L'],
+                    color_continuous_scale='RdYlGn',
+                    aspect="auto"
+                )
+                fig.update_layout(height=300)
+                st.plotly_chart(fig, use_container_width=True)
     
     # Footer
     st.markdown("---")
     st.markdown("""
     <div style="text-align: center; color: #666; font-size: 0.9em;">
-    <p><strong>RANTV Algorithmic Trading System v4.0</strong> | Multi-Strategy Algo Trading | Paper Trading Mode</p>
-    <p>⚠️ This is for educational and testing purposes only. Paper trading uses simulated data.</p>
+    <p><strong>RANTV Algorithmic Trading System v5.0</strong> | Smart Money Concept | Multi-Strategy | Accuracy Tracking</p>
+    <p>⚠️ This is for educational and paper trading purposes only. All trades are simulated.</p>
     </div>
     """, unsafe_allow_html=True)
 
