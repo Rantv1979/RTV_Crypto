@@ -38,7 +38,7 @@ st.set_page_config(
 UTC_TZ = pytz.timezone("UTC")
 
 # Trading Parameters
-INITIAL_CAPITAL = 500.0
+INITIAL_CAPITAL = 100000.0
 TRADE_ALLOCATION = 0.15
 MAX_DAILY_TRADES = 15
 MAX_POSITIONS = 10
@@ -1884,10 +1884,10 @@ def main():
         
         initial_capital = st.number_input(
             "Initial Capital ($)",
-            min_value=200,
-            max_value=500,
-            value=100,
-            step=100
+            min_value=1000,
+            max_value=1000000,
+            value=100000,
+            step=1000
         )
         
         # Market selection
@@ -2057,4 +2057,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
