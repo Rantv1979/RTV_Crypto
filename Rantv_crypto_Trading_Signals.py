@@ -12,7 +12,6 @@ import streamlit as st
 import yfinance as yf
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
-# Removed problematic import: from streamlit_autorefresh import st_autorefresh
 import warnings
 import hashlib
 import json
@@ -1146,26 +1145,46 @@ class AlgorithmicTradingEngine:
             return False, f"Trade execution failed: {str(e)}"
     
     def _calculate_position_size(self, signal):
-        """Calculate position size based on risk management"""
+        """Calculate position size based on risk management - FIXED FOR $1000 CAPITAL"""
         current_price = self._get_current_price(signal['symbol'])
         stop_loss = signal.get('stop_loss', current_price * 0.95)
         
-        risk_per_share = abs(current_price - stop_loss)
+        # Calculate risk per share
+        if signal['action'] == 'BUY':
+            risk_per_share = current_price - stop_loss
+        else:
+            risk_per_share = stop_loss - current_price
+        
         if risk_per_share <= 0:
             return 0
         
-        risk_amount = self.cash * RISK_PER_TRADE
+        # Calculate based on $1000 capital with 2% risk
+        risk_amount = self.initial_capital * RISK_PER_TRADE  # $20 risk on $1000 capital
+        
+        # Calculate quantity
         quantity = int(risk_amount / risk_per_share)
         
-        # Ensure minimum and maximum limits
+        # Ensure we don't exceed available cash
+        position_cost = quantity * current_price
+        if position_cost > self.cash * 0.9:  # Don't use more than 90% of cash
+            quantity = int((self.cash * 0.9) / current_price)
+        
+        # Minimum and maximum limits
         min_quantity = 1
-        max_quantity = int(self.cash * 0.1 / current_price)
+        max_quantity = int((self.cash * 0.1) / current_price)  # Max 10% of capital per position
         
         return max(min_quantity, min(quantity, max_quantity))
     
     def _execute_paper_trade(self, signal, quantity, current_price):
-        """Execute paper trade"""
+        """Execute paper trade - FIXED P&L CALCULATION"""
         trade_id = f"{signal['symbol']}_{signal['action']}_{int(time.time())}"
+        
+        # Calculate position value
+        position_value = quantity * current_price
+        
+        # Ensure we have enough cash
+        if signal['action'] == 'BUY' and position_value > self.cash:
+            return False, f"Insufficient cash: ${self.cash:.2f} available, need ${position_value:.2f}"
         
         trade = {
             'trade_id': trade_id,
@@ -1180,17 +1199,18 @@ class AlgorithmicTradingEngine:
             'timestamp': datetime.now(),
             'status': 'OPEN',
             'pnl': 0.0,
+            'pnl_percentage': 0.0,
+            'position_value': position_value,
             'paper_trade': True,
             'confidence': signal.get('confidence', 0.5),
             'risk_reward': self._calculate_risk_reward(signal, current_price)
         }
         
         # Update cash (simulated)
-        trade_value = quantity * current_price
         if signal['action'] == 'BUY':
-            self.cash -= trade_value
+            self.cash -= position_value
         elif signal['action'] == 'SELL':
-            self.cash += trade_value
+            self.cash += position_value
         
         self.positions[trade_id] = trade
         self.trade_history.append(trade)
@@ -1201,7 +1221,7 @@ class AlgorithmicTradingEngine:
         # Save trades
         self.data_storage.save_trades(self.trade_history)
         
-        return True, f"Paper trade executed: {signal['action']} {quantity} {signal['symbol']} @ ${current_price:.2f}"
+        return True, f"Paper trade executed: {signal['action']} {quantity} {signal['symbol']} @ ${current_price:.2f} (Value: ${position_value:.2f})"
     
     def _calculate_risk_reward(self, signal, entry_price):
         """Calculate risk-reward ratio"""
@@ -1231,13 +1251,14 @@ class AlgorithmicTradingEngine:
             current_price = self._get_current_price(position['symbol'])
             position['current_price'] = current_price
             
-            # Calculate P&L
+            # Calculate P&L - FIXED CALCULATION
             if position['action'] == 'BUY':
                 pnl = (current_price - position['entry_price']) * position['quantity']
             else:
                 pnl = (position['entry_price'] - current_price) * position['quantity']
             
             position['pnl'] = pnl
+            position['pnl_percentage'] = (pnl / (position['entry_price'] * position['quantity'])) * 100
             
             # Check stop loss
             if position['action'] == 'BUY' and current_price <= position['stop_loss']:
@@ -1256,28 +1277,35 @@ class AlgorithmicTradingEngine:
             self._close_position(trade_id, reason)
     
     def _close_position(self, trade_id, reason='MANUAL'):
-        """Close a position"""
+        """Close a position - FIXED P&L CALCULATION"""
         if trade_id not in self.positions:
             return False
         
         position = self.positions[trade_id]
         current_price = self._get_current_price(position['symbol'])
         
-        # Calculate final P&L
+        # Calculate final P&L - FIXED CALCULATION
         if position['action'] == 'BUY':
             pnl = (current_price - position['entry_price']) * position['quantity']
+            # Return cash from position sale
             if position['paper_trade']:
                 self.cash += position['quantity'] * current_price
         else:
             pnl = (position['entry_price'] - current_price) * position['quantity']
+            # For short selling, we need to return the borrowed shares
             if position['paper_trade']:
-                self.cash += position['quantity'] * position['entry_price'] * 2
+                # In paper trading, we just add the profit/loss to cash
+                self.cash += position['position_value'] + pnl
+        
+        # Calculate percentage P&L
+        pnl_percentage = (pnl / (position['entry_price'] * position['quantity'])) * 100
         
         # Update position
         position['exit_price'] = current_price
         position['exit_time'] = datetime.now()
         position['status'] = 'CLOSED'
         position['closed_pnl'] = pnl
+        position['closed_pnl_percentage'] = pnl_percentage
         position['exit_reason'] = reason
         
         # Update accuracy metrics
@@ -1321,9 +1349,13 @@ class AlgorithmicTradingEngine:
         
         # Calculate profit factor
         if self.accuracy_metrics['losing_trades'] > 0:
-            avg_win = self.accuracy_metrics['total_pnl'] / max(1, winning_trades)
-            avg_loss = abs(self.accuracy_metrics['total_pnl']) / max(1, self.accuracy_metrics['losing_trades'])
-            self.accuracy_metrics['profit_factor'] = avg_win / avg_loss if avg_loss > 0 else float('inf')
+            total_wins = sum([p for p in [t.get('closed_pnl', 0) for t in self.trade_history if t.get('status') == 'CLOSED'] if p > 0])
+            total_losses = abs(sum([p for p in [t.get('closed_pnl', 0) for t in self.trade_history if t.get('status') == 'CLOSED'] if p < 0]))
+            
+            if total_losses > 0:
+                self.accuracy_metrics['profit_factor'] = total_wins / total_losses
+            else:
+                self.accuracy_metrics['profit_factor'] = float('inf')
         
         # Update strategy win rates
         for strategy, perf in self.strategy_performance.items():
@@ -1399,7 +1431,6 @@ class AlgorithmicTradingEngine:
         """Close all open positions"""
         closed = []
         for trade_id in list(self.positions.keys()):
-            current_price = self._get_current_price(self.positions[trade_id]['symbol'])
             if self._close_position(trade_id, 'MANUAL_CLOSE_ALL'):
                 closed.append(trade_id)
         return len(closed)
@@ -1419,7 +1450,7 @@ def create_header():
     <div style="text-align: center; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 10px; margin-bottom: 20px;">
         <h1 style="color: white; margin: 0;">🤖 RANTV ALGORITHMIC TRADING SYSTEM</h1>
         <p style="color: rgba(255,255,255,0.9); margin: 5px 0 0 0;">Smart Money Concept & Multi-Strategy Trading with Accuracy Tracking</p>
-        <p style="color: rgba(255,255,255,0.7); margin: 5px 0 0 0; font-size: 0.9em;">Capital: $1,000 | No Duplicate Trades</p>
+        <p style="color: rgba(255,255,255,0.7); margin: 5px 0 0 0; font-size: 0.9em;">Capital: $1,000 | No Duplicate Trades | Realistic P&L</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1529,14 +1560,15 @@ def create_positions_dashboard(trading_engine):
                 st.write(f"**{position['symbol']}** - <span style='color:{action_color};'>{position['action']}</span>", 
                         unsafe_allow_html=True)
                 st.write(f"Qty: {position['quantity']} | Entry: ${position['entry_price']:.2f}")
-                st.write(f"Strategy: {position['strategy']} | Confidence: {position.get('confidence', 0.5):.1%}")
+                st.write(f"Strategy: {position['strategy']} | Value: ${position.get('position_value', 0):.2f}")
             
             with col2:
                 current_price = position.get('current_price', position['entry_price'])
                 pnl = position.get('pnl', 0)
+                pnl_percentage = position.get('pnl_percentage', 0)
                 pnl_color = "green" if pnl >= 0 else "red"
                 st.write(f"Current: ${current_price:.2f}")
-                st.write(f"<span style='color:{pnl_color};'>P&L: ${pnl:+,.2f}</span>", 
+                st.write(f"<span style='color:{pnl_color};'>P&L: ${pnl:+,.2f} ({pnl_percentage:+.1f}%)</span>", 
                         unsafe_allow_html=True)
             
             with col3:
@@ -1574,14 +1606,20 @@ def create_trading_history_dashboard(trading_engine):
         # Prepare data for display
         history_data = []
         for trade in trade_history:
+            pnl = trade.get('closed_pnl', trade.get('pnl', 0))
+            pnl_percentage = trade.get('closed_pnl_percentage', trade.get('pnl_percentage', 0))
+            
             history_data.append({
                 'ID': trade['trade_id'][-8:],
                 'Symbol': trade['symbol'],
                 'Action': trade['action'],
                 'Strategy': trade['strategy'],
+                'Qty': trade['quantity'],
                 'Entry': f"${trade['entry_price']:.2f}",
                 'Exit': f"${trade.get('exit_price', 'N/A'):.2f}" if trade.get('exit_price') else "N/A",
-                'P&L': f"${trade.get('closed_pnl', trade.get('pnl', 0)):+,.2f}",
+                'P&L': f"${pnl:+,.2f}",
+                'P&L %': f"{pnl_percentage:+.1f}%" if pnl_percentage else "N/A",
+                'Value': f"${trade.get('position_value', 0):.2f}",
                 'Status': trade['status'],
                 'Reason': trade.get('exit_reason', 'N/A'),
                 'Date': trade['timestamp'].strftime('%Y-%m-%d %H:%M') if isinstance(trade['timestamp'], datetime) else trade['timestamp']
@@ -1614,9 +1652,11 @@ def create_trading_history_dashboard(trading_engine):
                 {
                     'Date': t['timestamp'] if isinstance(t['timestamp'], datetime) else datetime.now(),
                     'P&L': t.get('closed_pnl', 0),
+                    'P&L %': t.get('closed_pnl_percentage', 0),
                     'Strategy': t.get('strategy', 'unknown'),
                     'Symbol': t['symbol'],
-                    'Action': t['action']
+                    'Action': t['action'],
+                    'Value': t.get('position_value', 0)
                 }
                 for t in closed_trades
             ])
@@ -1810,7 +1850,8 @@ def create_signal_generator(trading_engine):
                             st.write(f"Confidence: {signal['confidence']:.1%}")
                         
                         with col2:
-                            st.write(f"Price: ${trading_engine._get_current_price(signal['symbol']):.2f}")
+                            current_price = trading_engine._get_current_price(signal['symbol'])
+                            st.write(f"Price: ${current_price:.2f}")
                         
                         with col3:
                             st.write(f"SL: ${signal.get('stop_loss', 0):.2f}")
@@ -1897,9 +1938,6 @@ def main():
     # Initialize session state
     if 'trading_engine' not in st.session_state:
         st.session_state.trading_engine = AlgorithmicTradingEngine(mode="paper", initial_capital=INITIAL_CAPITAL)
-    
-    # Removed auto-refresh due to import issue
-    # Instead, add a manual refresh button
     
     # Create header
     create_header()
@@ -2082,7 +2120,7 @@ def main():
     <div style="text-align: center; color: #666; font-size: 0.9em;">
     <p><strong>RANTV Algorithmic Trading System v5.0</strong> | Smart Money Concept | Multi-Strategy | Accuracy Tracking</p>
     <p>⚠️ This is for educational and paper trading purposes only. All trades are simulated.</p>
-    <p>💰 Capital: $1,000 | ⚠️ No Duplicate Trades</p>
+    <p>💰 Capital: $1,000 | ⚠️ No Duplicate Trades | 📊 Realistic P&L Calculations</p>
     </div>
     """, unsafe_allow_html=True)
 
