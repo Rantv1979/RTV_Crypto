@@ -1884,10 +1884,10 @@ def main():
         
         initial_capital = st.number_input(
             "Initial Capital ($)",
-            min_value=1000,
-            max_value=1000000,
-            value=100000,
-            step=1000
+            min_value=200,
+            max_value=500,
+            value=100,
+            step=100
         )
         
         # Market selection
@@ -2057,3 +2057,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
