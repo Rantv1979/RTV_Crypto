@@ -13,8 +13,6 @@ import yfinance as yf
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 from streamlit_autorefresh import st_autorefresh
-import requests
-from scipy import stats
 import warnings
 import hashlib
 import json
@@ -22,12 +20,6 @@ import pickle
 from pathlib import Path
 import threading
 import queue
-import schedule
-import ccxt
-import alpaca_trade_api as tradeapi
-from binance.client import Client
-import asyncio
-import websockets
 warnings.filterwarnings('ignore')
 
 # =============================================
@@ -78,111 +70,135 @@ COMMODITIES = [
 
 ALL_SYMBOLS = CRYPTO_SYMBOLS + US_STOCKS + FOREX_PAIRS + COMMODITIES
 
-# Exchange Mapping
-EXCHANGE_MAPPING = {
-    "BTC-USD": "binance",
-    "ETH-USD": "binance",
-    "SOL-USD": "binance",
-    "XRP-USD": "binance",
-    "BNB-USD": "binance",
-    "AAPL": "alpaca",
-    "MSFT": "alpaca",
-    "GOOGL": "alpaca",
-    "AMZN": "alpaca",
-    "TSLA": "alpaca",
-    "EURUSD=X": "oanda",
-    "GBPUSD=X": "oanda",
-    "USDJPY=X": "oanda",
-    "GC=F": "alpaca",
-    "SI=F": "alpaca"
-}
-
 # =============================================
-# EXCHANGE INTEGRATION MODULES
+# DATA STORAGE & CACHE MANAGEMENT
 # =============================================
 
-class ExchangeConnector:
-    """Unified exchange connector for multiple brokers"""
+class DataStorage:
+    """Persistent data storage for backtesting and results"""
     
-    def __init__(self, mode="paper"):
-        self.mode = mode  # 'paper' or 'live'
-        self.connections = {}
-        self.initialize_connections()
-    
-    def initialize_connections(self):
-        """Initialize all exchange connections"""
-        # Load API keys from environment or config
-        self.api_keys = self._load_api_keys()
+    def __init__(self):
+        self.storage_path = Path("trading_data")
+        self.storage_path.mkdir(exist_ok=True)
         
-    def _load_api_keys(self):
-        """Load API keys from configuration"""
-        # In production, load from secure storage
+    def save_trades(self, trades, filename="trades_history.pkl"):
+        """Save trades to file"""
+        filepath = self.storage_path / filename
+        with open(filepath, 'wb') as f:
+            pickle.dump(trades, f)
+    
+    def load_trades(self, filename="trades_history.pkl"):
+        """Load trades from file"""
+        filepath = self.storage_path / filename
+        if filepath.exists():
+            with open(filepath, 'rb') as f:
+                return pickle.load(f)
+        return []
+    
+    def save_backtest_results(self, results, filename="backtest_results.json"):
+        """Save backtest results"""
+        filepath = self.storage_path / filename
+        with open(filepath, 'w') as f:
+            json.dump(results, f, default=str, indent=2)
+    
+    def load_backtest_results(self, filename="backtest_results.json"):
+        """Load backtest results"""
+        filepath = self.storage_path / filename
+        if filepath.exists():
+            with open(filepath, 'r') as f:
+                return json.load(f)
+        return {}
+
+# =============================================
+# SMART MONEY CONCEPT ANALYZER
+# =============================================
+
+class SmartMoneyAnalyzer:
+    """Smart Money Concept analyzer"""
+    
+    def __init__(self):
+        self.order_flow_cache = {}
+        self.liquidity_zones = {}
+        
+    def detect_fair_value_gaps(self, high, low, close):
+        """Detect Fair Value Gaps"""
+        fvgs = []
+        
+        if len(close) < 4:
+            return fvgs
+            
+        for i in range(1, len(close)-2):
+            if low.iloc[i] > high.iloc[i-1]:
+                fvg = {
+                    'type': 'BULLISH_FVG',
+                    'top': float(low.iloc[i]),
+                    'bottom': float(high.iloc[i-1]),
+                    'mid': float((low.iloc[i] + high.iloc[i-1]) / 2),
+                    'index': i
+                }
+                fvgs.append(fvg)
+            
+            elif high.iloc[i] < low.iloc[i-1]:
+                fvg = {
+                    'type': 'BEARISH_FVG',
+                    'top': float(low.iloc[i-1]),
+                    'bottom': float(high.iloc[i]),
+                    'mid': float((low.iloc[i-1] + high.iloc[i]) / 2),
+                    'index': i
+                }
+                fvgs.append(fvg)
+        
+        return fvgs[-5:] if fvgs else []
+    
+    def analyze_market_structure(self, high, low, close):
+        """Analyze market structure"""
+        if len(close) < 100:
+            return {'trend': 'NEUTRAL', 'momentum': 0, 'structure': 'RANGING'}
+        
+        # Calculate trend
+        sma_50 = close.rolling(window=50).mean()
+        trend = 1 if close.iloc[-1] > sma_50.iloc[-1] else -1
+        
+        # Calculate RSI
+        delta = close.diff()
+        gain = delta.clip(lower=0).rolling(window=14).mean()
+        loss = (-delta.clip(upper=0)).rolling(window=14).mean()
+        rs = gain / loss.replace(0, np.nan)
+        rsi = 100 - (100 / (1 + rs))
+        
+        # Determine structure
+        recent_highs = high.iloc[-20:].tolist()
+        recent_lows = low.iloc[-20:].tolist()
+        
+        higher_highs = all(recent_highs[i] > recent_highs[i-1] for i in range(1, len(recent_highs)))
+        higher_lows = all(recent_lows[i] > recent_lows[i-1] for i in range(1, len(recent_lows)))
+        lower_highs = all(recent_highs[i] < recent_highs[i-1] for i in range(1, len(recent_highs)))
+        lower_lows = all(recent_lows[i] < recent_lows[i-1] for i in range(1, len(recent_lows)))
+        
+        if higher_highs and higher_lows:
+            structure = 'UPTREND'
+        elif lower_highs and lower_lows:
+            structure = 'DOWNTREND'
+        else:
+            structure = 'RANGING'
+        
+        momentum_score = 0
+        if trend == 1:
+            momentum_score += 0.3
+        if rsi.iloc[-1] > 50:
+            momentum_score += 0.2
+        if structure == 'UPTREND':
+            momentum_score += 0.3
+        elif structure == 'DOWNTREND':
+            momentum_score -= 0.3
+        
         return {
-            'alpaca': {
-                'api_key': st.secrets.get('ALPACA_API_KEY', ''),
-                'api_secret': st.secrets.get('ALPACA_SECRET_KEY', ''),
-                'paper': self.mode == 'paper'
-            },
-            'binance': {
-                'api_key': st.secrets.get('BINANCE_API_KEY', ''),
-                'api_secret': st.secrets.get('BINANCE_SECRET_KEY', '')
-            },
-            'oanda': {
-                'api_key': st.secrets.get('OANDA_API_KEY', ''),
-                'account_id': st.secrets.get('OANDA_ACCOUNT_ID', '')
-            }
+            'htf_trend': 'BULLISH' if trend == 1 else 'BEARISH',
+            'ltf_momentum': 'BULLISH' if rsi.iloc[-1] > 50 else 'BEARISH',
+            'structure': structure,
+            'momentum_score': momentum_score,
+            'rsi': rsi.iloc[-1]
         }
-    
-    def connect_alpaca(self):
-        """Connect to Alpaca trading API"""
-        try:
-            if self.mode == 'paper':
-                base_url = 'https://paper-api.alpaca.markets'
-            else:
-                base_url = 'https://api.alpaca.markets'
-            
-            api = tradeapi.REST(
-                self.api_keys['alpaca']['api_key'],
-                self.api_keys['alpaca']['api_secret'],
-                base_url,
-                api_version='v2'
-            )
-            
-            # Test connection
-            account = api.get_account()
-            st.success(f"✅ Alpaca Connected (Paper: {self.mode == 'paper'})")
-            return api
-        except Exception as e:
-            st.error(f"❌ Alpaca Connection Failed: {str(e)}")
-            return None
-    
-    def connect_binance(self):
-        """Connect to Binance API"""
-        try:
-            client = Client(
-                self.api_keys['binance']['api_key'],
-                self.api_keys['binance']['api_secret']
-            )
-            
-            # Test connection
-            account_info = client.get_account()
-            st.success("✅ Binance Connected")
-            return client
-        except Exception as e:
-            st.error(f"❌ Binance Connection Failed: {str(e)}")
-            return None
-    
-    def get_exchange(self, symbol):
-        """Get appropriate exchange for symbol"""
-        exchange_name = EXCHANGE_MAPPING.get(symbol, 'alpaca')
-        
-        if exchange_name not in self.connections:
-            if exchange_name == 'alpaca':
-                self.connections[exchange_name] = self.connect_alpaca()
-            elif exchange_name == 'binance':
-                self.connections[exchange_name] = self.connect_binance()
-        
-        return self.connections.get(exchange_name)
 
 # =============================================
 # REAL-TIME MARKET DATA STREAM
@@ -193,9 +209,6 @@ class MarketDataStream:
     
     def __init__(self):
         self.price_stream = {}
-        self.order_book = {}
-        self.volume_profile = {}
-        self.last_update = {}
         self.subscriptions = set()
         
     def subscribe(self, symbols):
@@ -257,6 +270,222 @@ class MarketDataStream:
             }
 
 # =============================================
+# TRADING STRATEGIES
+# =============================================
+
+class BaseStrategy:
+    """Base class for all trading strategies"""
+    
+    def __init__(self):
+        self.name = "Base Strategy"
+        self.description = "Base strategy class"
+        self.parameters = {}
+    
+    def generate_signal(self, symbol, current_price, historical_data):
+        """Generate trading signal"""
+        raise NotImplementedError
+    
+    def calculate_indicators(self, data):
+        """Calculate technical indicators"""
+        if len(data) < 20:
+            return {}
+        
+        indicators = {}
+        
+        # Moving averages
+        indicators['sma_20'] = data['Close'].rolling(window=20).mean().iloc[-1]
+        indicators['sma_50'] = data['Close'].rolling(window=50).mean().iloc[-1]
+        indicators['ema_12'] = data['Close'].ewm(span=12).mean().iloc[-1]
+        indicators['ema_26'] = data['Close'].ewm(span=26).mean().iloc[-1]
+        
+        # RSI
+        delta = data['Close'].diff()
+        gain = delta.clip(lower=0).rolling(window=14).mean()
+        loss = (-delta.clip(upper=0)).rolling(window=14).mean()
+        rs = gain / loss.replace(0, np.nan)
+        indicators['rsi'] = 100 - (100 / (1 + rs)).iloc[-1]
+        
+        # MACD
+        indicators['macd'] = indicators['ema_12'] - indicators['ema_26']
+        indicators['macd_signal'] = data['Close'].ewm(span=9).mean().iloc[-1]
+        
+        # Bollinger Bands
+        indicators['bb_middle'] = indicators['sma_20']
+        bb_std = data['Close'].rolling(window=20).std().iloc[-1]
+        indicators['bb_upper'] = indicators['bb_middle'] + (bb_std * 2)
+        indicators['bb_lower'] = indicators['bb_middle'] - (bb_std * 2)
+        
+        # Volume
+        indicators['volume_sma'] = data['Volume'].rolling(window=20).mean().iloc[-1]
+        indicators['volume_ratio'] = data['Volume'].iloc[-1] / indicators['volume_sma'] if indicators['volume_sma'] > 0 else 1
+        
+        return indicators
+
+class TrendFollowingStrategy(BaseStrategy):
+    """Trend following strategy"""
+    
+    def __init__(self):
+        super().__init__()
+        self.name = "Trend Following"
+        self.description = "Follows established market trends"
+    
+    def generate_signal(self, symbol, current_price, historical_data):
+        indicators = self.calculate_indicators(historical_data)
+        
+        if len(indicators) == 0:
+            return None
+        
+        signal = {
+            'symbol': symbol,
+            'strategy': self.name,
+            'confidence': 0.0
+        }
+        
+        # Bullish trend
+        if (current_price > indicators['sma_20'] > indicators['sma_50'] and
+            indicators['rsi'] > 50 and indicators['rsi'] < 70):
+            signal['action'] = 'BUY'
+            signal['confidence'] = 0.7
+            signal['stop_loss'] = current_price * 0.95
+            signal['take_profit'] = current_price * 1.10
+        
+        # Bearish trend
+        elif (current_price < indicators['sma_20'] < indicators['sma_50'] and
+              indicators['rsi'] < 50 and indicators['rsi'] > 30):
+            signal['action'] = 'SELL'
+            signal['confidence'] = 0.7
+            signal['stop_loss'] = current_price * 1.05
+            signal['take_profit'] = current_price * 0.90
+        
+        else:
+            return None
+        
+        return signal
+
+class MeanReversionStrategy(BaseStrategy):
+    """Mean reversion strategy"""
+    
+    def __init__(self):
+        super().__init__()
+        self.name = "Mean Reversion"
+        self.description = "Trades price reversions to mean"
+    
+    def generate_signal(self, symbol, current_price, historical_data):
+        indicators = self.calculate_indicators(historical_data)
+        
+        if len(indicators) == 0:
+            return None
+        
+        signal = {
+            'symbol': symbol,
+            'strategy': self.name,
+            'confidence': 0.0
+        }
+        
+        # Oversold
+        if current_price < indicators['bb_lower'] and indicators['rsi'] < 30:
+            signal['action'] = 'BUY'
+            signal['confidence'] = 0.65
+            signal['stop_loss'] = current_price * 0.97
+            signal['take_profit'] = indicators['bb_middle']
+        
+        # Overbought
+        elif current_price > indicators['bb_upper'] and indicators['rsi'] > 70:
+            signal['action'] = 'SELL'
+            signal['confidence'] = 0.65
+            signal['stop_loss'] = current_price * 1.03
+            signal['take_profit'] = indicators['bb_middle']
+        
+        else:
+            return None
+        
+        return signal
+
+class BreakoutStrategy(BaseStrategy):
+    """Breakout trading strategy"""
+    
+    def __init__(self):
+        super().__init__()
+        self.name = "Breakout"
+        self.description = "Trades price breakouts from consolidation"
+    
+    def generate_signal(self, symbol, current_price, historical_data):
+        if len(historical_data) < 20:
+            return None
+        
+        # Calculate recent range
+        recent_high = historical_data['High'].iloc[-20:].max()
+        recent_low = historical_data['Low'].iloc[-20:].min()
+        consolidation_range = (recent_high - recent_low) / recent_low
+        
+        signal = {
+            'symbol': symbol,
+            'strategy': self.name,
+            'confidence': 0.0
+        }
+        
+        # Bullish breakout
+        if (current_price > recent_high and 
+            consolidation_range < 0.05 and
+            historical_data['Volume'].iloc[-1] > historical_data['Volume'].rolling(window=20).mean().iloc[-1] * 1.5):
+            signal['action'] = 'BUY'
+            signal['confidence'] = 0.75
+            signal['stop_loss'] = recent_low
+            signal['take_profit'] = current_price + (recent_high - recent_low) * 1.5
+        
+        # Bearish breakout
+        elif (current_price < recent_low and
+              consolidation_range < 0.05 and
+              historical_data['Volume'].iloc[-1] > historical_data['Volume'].rolling(window=20).mean().iloc[-1] * 1.5):
+            signal['action'] = 'SELL'
+            signal['confidence'] = 0.75
+            signal['stop_loss'] = recent_high
+            signal['take_profit'] = current_price - (recent_high - recent_low) * 1.5
+        
+        else:
+            return None
+        
+        return signal
+
+# =============================================
+# RISK MANAGEMENT MODULE
+# =============================================
+
+class RiskManager:
+    """Risk management module"""
+    
+    def __init__(self):
+        self.max_daily_loss = -0.05  # -5% daily loss limit
+        self.max_position_size = 0.1  # 10% of capital per position
+        self.daily_loss = 0.0
+    
+    def validate_signal(self, signal, current_positions, available_capital):
+        """Validate trading signal against risk rules"""
+        
+        # Check daily loss limit
+        if self.daily_loss < self.max_daily_loss * available_capital:
+            return False, "Daily loss limit reached"
+        
+        # Check position size
+        position_value = signal.get('quantity', 1) * signal.get('entry_price', 0)
+        if position_value > available_capital * self.max_position_size:
+            return False, "Position size exceeds limit"
+        
+        # Check maximum positions
+        if len(current_positions) >= MAX_POSITIONS:
+            return False, "Maximum positions reached"
+        
+        return True, "Signal validated"
+    
+    def update_daily_loss(self, pnl):
+        """Update daily loss tracking"""
+        self.daily_loss += pnl
+    
+    def reset_daily_loss(self):
+        """Reset daily loss tracking"""
+        self.daily_loss = 0.0
+
+# =============================================
 # ALGORITHMIC TRADING ENGINE
 # =============================================
 
@@ -270,10 +499,11 @@ class AlgorithmicTradingEngine:
         self.positions = {}
         self.trade_history = []
         self.order_queue = queue.Queue()
-        self.exchange = ExchangeConnector(mode)
         self.market_data = MarketDataStream()
         self.strategies = {}
         self.risk_manager = RiskManager()
+        self.smc_analyzer = SmartMoneyAnalyzer()
+        self.data_storage = DataStorage()
         
         # Performance tracking
         self.performance = {
@@ -292,16 +522,26 @@ class AlgorithmicTradingEngine:
         
         # Load strategies
         self._load_strategies()
+        
+        # Load historical data
+        self._load_historical_data()
     
     def _load_strategies(self):
         """Load trading strategies"""
         self.strategies = {
             'trend_following': TrendFollowingStrategy(),
             'mean_reversion': MeanReversionStrategy(),
-            'breakout': BreakoutStrategy(),
-            'arbitrage': ArbitrageStrategy(),
-            'market_making': MarketMakingStrategy()
+            'breakout': BreakoutStrategy()
         }
+    
+    def _load_historical_data(self):
+        """Load historical trading data"""
+        try:
+            historical_trades = self.data_storage.load_trades()
+            if historical_trades:
+                self.trade_history = historical_trades
+        except:
+            pass
     
     def start_trading(self):
         """Start the algorithmic trading system"""
@@ -313,7 +553,6 @@ class AlgorithmicTradingEngine:
         self.trading_thread.daemon = True
         self.trading_thread.start()
         
-        st.success("🚀 Algorithmic Trading Started!")
         return True
     
     def stop_trading(self):
@@ -321,8 +560,6 @@ class AlgorithmicTradingEngine:
         self.trading_active = False
         if self.trading_thread:
             self.trading_thread.join(timeout=5)
-        
-        st.info("🛑 Algorithmic Trading Stopped")
         return True
     
     def _trading_loop(self):
@@ -337,7 +574,8 @@ class AlgorithmicTradingEngine:
                 
                 # 3. Process signals with risk management
                 for signal in signals:
-                    if self.risk_manager.validate_signal(signal, self.positions, self.cash):
+                    valid, message = self.risk_manager.validate_signal(signal, self.positions, self.cash)
+                    if valid:
                         self._execute_trade(signal)
                 
                 # 4. Manage existing positions
@@ -347,10 +585,10 @@ class AlgorithmicTradingEngine:
                 self._update_performance()
                 
                 # Sleep to control loop frequency
-                time.sleep(1)  # 1 second between iterations
+                time.sleep(1)
                 
             except Exception as e:
-                st.error(f"Trading loop error: {str(e)}")
+                print(f"Trading loop error: {str(e)}")
                 time.sleep(5)
     
     def _generate_signals(self):
@@ -360,7 +598,7 @@ class AlgorithmicTradingEngine:
         # Get real-time prices for subscribed symbols
         symbols = list(self.market_data.subscriptions)
         if not symbols:
-            symbols = ALL_SYMBOLS[:10]  # Default to first 10 symbols
+            symbols = ALL_SYMBOLS[:10]
         
         for symbol in symbols:
             current_price = self.market_data.get_real_time_price(symbol)
@@ -371,7 +609,7 @@ class AlgorithmicTradingEngine:
             # Run each strategy
             for strategy_name, strategy in self.strategies.items():
                 signal = strategy.generate_signal(symbol, current_price, historical_data)
-                if signal and signal['confidence'] > 0.6:  # Minimum confidence threshold
+                if signal and signal['confidence'] > 0.6:
                     signals.append(signal)
         
         return signals
@@ -383,13 +621,12 @@ class AlgorithmicTradingEngine:
             data = ticker.history(period=period, interval=interval)
             return data
         except:
-            # Return synthetic data for demo
             return self._generate_synthetic_data(symbol, period)
     
     def _generate_synthetic_data(self, symbol, period='1d'):
         """Generate synthetic market data"""
         if period == '1d':
-            periods = 96  # 15-min candles in a day
+            periods = 96
         elif period == '7d':
             periods = 672
         else:
@@ -446,12 +683,8 @@ class AlgorithmicTradingEngine:
             # Get current price
             current_price = self.market_data.get_real_time_price(symbol)
             
-            if self.mode == 'paper':
-                # Paper trading execution
-                return self._execute_paper_trade(signal, quantity, current_price)
-            else:
-                # Real trading execution
-                return self._execute_real_trade(signal, quantity, current_price)
+            # Paper trading execution
+            return self._execute_paper_trade(signal, quantity, current_price)
                 
         except Exception as e:
             return False, f"Trade execution failed: {str(e)}"
@@ -470,7 +703,7 @@ class AlgorithmicTradingEngine:
         
         # Ensure minimum and maximum limits
         min_quantity = 1
-        max_quantity = int(self.cash * 0.1 / current_price)  # Max 10% of capital
+        max_quantity = int(self.cash * 0.1 / current_price)
         
         return max(min_quantity, min(quantity, max_quantity))
     
@@ -499,94 +732,15 @@ class AlgorithmicTradingEngine:
         if signal['action'] == 'BUY':
             self.cash -= trade_value
         elif signal['action'] == 'SELL':
-            self.cash += trade_value  # Simplified for paper trading
+            self.cash += trade_value
         
         self.positions[trade_id] = trade
         self.trade_history.append(trade)
         
-        return True, f"Paper trade executed: {signal['action']} {quantity} {signal['symbol']} @ ${current_price:.2f}"
-    
-    def _execute_real_trade(self, signal, quantity, current_price):
-        """Execute real trade on exchange"""
-        symbol = signal['symbol']
-        action = signal['action'].lower()
-        exchange_name = EXCHANGE_MAPPING.get(symbol, 'alpaca')
+        # Save trades
+        self.data_storage.save_trades(self.trade_history)
         
-        try:
-            if exchange_name == 'alpaca':
-                # Alpaca trading
-                api = self.exchange.connect_alpaca()
-                if not api:
-                    return False, "Alpaca connection failed"
-                
-                # Convert symbol format
-                trade_symbol = symbol.replace('-USD', '') if '-USD' in symbol else symbol
-                
-                order = api.submit_order(
-                    symbol=trade_symbol,
-                    qty=quantity,
-                    side=action,
-                    type='market',
-                    time_in_force='gtc'
-                )
-                
-                trade_id = order.id
-                
-            elif exchange_name == 'binance':
-                # Binance trading
-                client = self.exchange.connect_binance()
-                if not client:
-                    return False, "Binance connection failed"
-                
-                # Convert symbol format
-                trade_symbol = symbol.replace('-USD', 'USDT')
-                
-                if action == 'buy':
-                    order = client.create_order(
-                        symbol=trade_symbol,
-                        side='BUY',
-                        type='MARKET',
-                        quantity=quantity
-                    )
-                else:
-                    order = client.create_order(
-                        symbol=trade_symbol,
-                        side='SELL',
-                        type='MARKET',
-                        quantity=quantity
-                    )
-                
-                trade_id = order['orderId']
-            
-            else:
-                return False, f"Unsupported exchange for {symbol}"
-            
-            # Record trade
-            trade = {
-                'trade_id': trade_id,
-                'symbol': symbol,
-                'action': signal['action'],
-                'quantity': quantity,
-                'entry_price': current_price,
-                'current_price': current_price,
-                'stop_loss': signal.get('stop_loss', current_price * 0.95),
-                'take_profit': signal.get('take_profit', current_price * 1.05),
-                'strategy': signal.get('strategy', 'unknown'),
-                'timestamp': datetime.now(),
-                'status': 'OPEN',
-                'pnl': 0.0,
-                'paper_trade': False,
-                'exchange': exchange_name,
-                'order_id': trade_id
-            }
-            
-            self.positions[trade_id] = trade
-            self.trade_history.append(trade)
-            
-            return True, f"Real trade executed on {exchange_name}: {signal['action']} {quantity} {symbol} @ ${current_price:.2f}"
-            
-        except Exception as e:
-            return False, f"Trade execution error: {str(e)}"
+        return True, f"Paper trade executed: {signal['action']} {quantity} {signal['symbol']} @ ${current_price:.2f}"
     
     def _manage_positions(self):
         """Manage existing positions (stop loss, take profit)"""
@@ -634,13 +788,12 @@ class AlgorithmicTradingEngine:
         # Calculate final P&L
         if position['action'] == 'BUY':
             pnl = (current_price - position['entry_price']) * position['quantity']
-            # Return cash (simplified for paper trading)
             if position['paper_trade']:
                 self.cash += position['quantity'] * current_price
         else:
             pnl = (position['entry_price'] - current_price) * position['quantity']
             if position['paper_trade']:
-                self.cash += position['quantity'] * position['entry_price'] * 2  # Simplified
+                self.cash += position['quantity'] * position['entry_price'] * 2
         
         # Update position
         position['exit_price'] = current_price
@@ -662,6 +815,9 @@ class AlgorithmicTradingEngine:
         # Remove from open positions
         del self.positions[trade_id]
         
+        # Save trades
+        self.data_storage.save_trades(self.trade_history)
+        
         return True
     
     def _update_performance(self):
@@ -676,7 +832,7 @@ class AlgorithmicTradingEngine:
                     avg_return = np.mean(recent_pnls)
                     std_return = np.std(recent_pnls)
                     if std_return > 0:
-                        self.performance['sharpe_ratio'] = avg_return / std_return * np.sqrt(252)  # Annualized
+                        self.performance['sharpe_ratio'] = avg_return / std_return * np.sqrt(252)
     
     def get_portfolio_summary(self):
         """Get portfolio summary"""
@@ -689,6 +845,10 @@ class AlgorithmicTradingEngine:
                 total_value += position_value
                 open_pnl += position['pnl']
         
+        total_trades = self.performance['total_trades']
+        winning_trades = self.performance['winning_trades']
+        win_rate = winning_trades / max(1, total_trades)
+        
         return {
             'cash': self.cash,
             'total_value': total_value,
@@ -696,8 +856,8 @@ class AlgorithmicTradingEngine:
             'open_pnl': open_pnl,
             'total_pnl': self.performance['total_pnl'],
             'daily_pnl': self.performance['daily_pnl'],
-            'win_rate': self.performance['winning_trades'] / max(1, self.performance['total_trades']),
-            'total_trades': self.performance['total_trades'],
+            'win_rate': win_rate,
+            'total_trades': total_trades,
             'sharpe_ratio': self.performance['sharpe_ratio']
         }
     
@@ -708,272 +868,15 @@ class AlgorithmicTradingEngine:
     def get_trade_history(self, limit=50):
         """Get trade history"""
         return self.trade_history[-limit:] if self.trade_history else []
-
-# =============================================
-# TRADING STRATEGIES
-# =============================================
-
-class BaseStrategy:
-    """Base class for all trading strategies"""
     
-    def __init__(self):
-        self.name = "Base Strategy"
-        self.description = "Base strategy class"
-        self.parameters = {}
-    
-    def generate_signal(self, symbol, current_price, historical_data):
-        """Generate trading signal"""
-        raise NotImplementedError
-    
-    def calculate_indicators(self, data):
-        """Calculate technical indicators"""
-        if len(data) < 20:
-            return {}
-        
-        indicators = {}
-        
-        # Moving averages
-        indicators['sma_20'] = data['Close'].rolling(window=20).mean().iloc[-1]
-        indicators['sma_50'] = data['Close'].rolling(window=50).mean().iloc[-1]
-        indicators['ema_12'] = data['Close'].ewm(span=12).mean().iloc[-1]
-        indicators['ema_26'] = data['Close'].ewm(span=26).mean().iloc[-1]
-        
-        # RSI
-        delta = data['Close'].diff()
-        gain = delta.clip(lower=0).rolling(window=14).mean()
-        loss = (-delta.clip(upper=0)).rolling(window=14).mean()
-        rs = gain / loss.replace(0, np.nan)
-        indicators['rsi'] = 100 - (100 / (1 + rs)).iloc[-1]
-        
-        # MACD
-        indicators['macd'] = indicators['ema_12'] - indicators['ema_26']
-        indicators['macd_signal'] = data['Close'].ewm(span=9).mean().iloc[-1]
-        
-        # Bollinger Bands
-        indicators['bb_middle'] = indicators['sma_20']
-        bb_std = data['Close'].rolling(window=20).std().iloc[-1]
-        indicators['bb_upper'] = indicators['bb_middle'] + (bb_std * 2)
-        indicators['bb_lower'] = indicators['bb_middle'] - (bb_std * 2)
-        
-        # ATR
-        high_low = data['High'] - data['Low']
-        high_close = (data['High'] - data['Close'].shift()).abs()
-        low_close = (data['Low'] - data['Close'].shift()).abs()
-        ranges = pd.concat([high_low, high_close, low_close], axis=1)
-        true_range = ranges.max(axis=1)
-        indicators['atr'] = true_range.rolling(window=14).mean().iloc[-1]
-        
-        # Volume
-        indicators['volume_sma'] = data['Volume'].rolling(window=20).mean().iloc[-1]
-        indicators['volume_ratio'] = data['Volume'].iloc[-1] / indicators['volume_sma'] if indicators['volume_sma'] > 0 else 1
-        
-        return indicators
-
-class TrendFollowingStrategy(BaseStrategy):
-    """Trend following strategy"""
-    
-    def __init__(self):
-        super().__init__()
-        self.name = "Trend Following"
-        self.description = "Follows established market trends"
-    
-    def generate_signal(self, symbol, current_price, historical_data):
-        indicators = self.calculate_indicators(historical_data)
-        
-        if len(indicators) == 0:
-            return None
-        
-        signal = {
-            'symbol': symbol,
-            'strategy': self.name,
-            'confidence': 0.0
-        }
-        
-        # Bullish trend: Price above both SMAs and SMAs aligned
-        if (current_price > indicators['sma_20'] > indicators['sma_50'] and
-            indicators['rsi'] > 50 and indicators['rsi'] < 70):
-            signal['action'] = 'BUY'
-            signal['confidence'] = 0.7
-            signal['stop_loss'] = current_price * 0.95
-            signal['take_profit'] = current_price * 1.10
-        
-        # Bearish trend: Price below both SMAs and SMAs aligned
-        elif (current_price < indicators['sma_20'] < indicators['sma_50'] and
-              indicators['rsi'] < 50 and indicators['rsi'] > 30):
-            signal['action'] = 'SELL'
-            signal['confidence'] = 0.7
-            signal['stop_loss'] = current_price * 1.05
-            signal['take_profit'] = current_price * 0.90
-        
-        else:
-            return None
-        
-        return signal
-
-class MeanReversionStrategy(BaseStrategy):
-    """Mean reversion strategy"""
-    
-    def __init__(self):
-        super().__init__()
-        self.name = "Mean Reversion"
-        self.description = "Trades price reversions to mean"
-    
-    def generate_signal(self, symbol, current_price, historical_data):
-        indicators = self.calculate_indicators(historical_data)
-        
-        if len(indicators) == 0:
-            return None
-        
-        signal = {
-            'symbol': symbol,
-            'strategy': self.name,
-            'confidence': 0.0
-        }
-        
-        # Oversold: Price below lower Bollinger Band and RSI < 30
-        if current_price < indicators['bb_lower'] and indicators['rsi'] < 30:
-            signal['action'] = 'BUY'
-            signal['confidence'] = 0.65
-            signal['stop_loss'] = current_price * 0.97
-            signal['take_profit'] = indicators['bb_middle']
-        
-        # Overbought: Price above upper Bollinger Band and RSI > 70
-        elif current_price > indicators['bb_upper'] and indicators['rsi'] > 70:
-            signal['action'] = 'SELL'
-            signal['confidence'] = 0.65
-            signal['stop_loss'] = current_price * 1.03
-            signal['take_profit'] = indicators['bb_middle']
-        
-        else:
-            return None
-        
-        return signal
-
-class BreakoutStrategy(BaseStrategy):
-    """Breakout trading strategy"""
-    
-    def __init__(self):
-        super().__init__()
-        self.name = "Breakout"
-        self.description = "Trades price breakouts from consolidation"
-    
-    def generate_signal(self, symbol, current_price, historical_data):
-        if len(historical_data) < 20:
-            return None
-        
-        # Calculate recent volatility
-        recent_atr = historical_data['Close'].pct_change().std() * np.sqrt(252)
-        avg_atr = historical_data['Close'].pct_change().rolling(window=20).std().iloc[-1] * np.sqrt(252)
-        
-        # Calculate consolidation range
-        recent_high = historical_data['High'].iloc[-20:].max()
-        recent_low = historical_data['Low'].iloc[-20:].min()
-        consolidation_range = (recent_high - recent_low) / recent_low
-        
-        signal = {
-            'symbol': symbol,
-            'strategy': self.name,
-            'confidence': 0.0
-        }
-        
-        # Bullish breakout: Price breaks above consolidation with volume
-        if (current_price > recent_high and 
-            consolidation_range < 0.05 and  # Tight consolidation
-            historical_data['Volume'].iloc[-1] > historical_data['Volume'].rolling(window=20).mean().iloc[-1] * 1.5):
-            signal['action'] = 'BUY'
-            signal['confidence'] = 0.75
-            signal['stop_loss'] = recent_low
-            signal['take_profit'] = current_price + (recent_high - recent_low) * 1.5
-        
-        # Bearish breakout: Price breaks below consolidation with volume
-        elif (current_price < recent_low and
-              consolidation_range < 0.05 and
-              historical_data['Volume'].iloc[-1] > historical_data['Volume'].rolling(window=20).mean().iloc[-1] * 1.5):
-            signal['action'] = 'SELL'
-            signal['confidence'] = 0.75
-            signal['stop_loss'] = recent_high
-            signal['take_profit'] = current_price - (recent_high - recent_low) * 1.5
-        
-        else:
-            return None
-        
-        return signal
-
-class ArbitrageStrategy(BaseStrategy):
-    """Statistical arbitrage strategy"""
-    
-    def __init__(self):
-        super().__init__()
-        self.name = "Arbitrage"
-        self.description = "Statistical arbitrage between correlated assets"
-    
-    def generate_signal(self, symbol, current_price, historical_data):
-        # This is a simplified version
-        # In production, you'd compare prices across multiple exchanges
-        return None
-
-class MarketMakingStrategy(BaseStrategy):
-    """Market making strategy"""
-    
-    def __init__(self):
-        super().__init__()
-        self.name = "Market Making"
-        self.description = "Provides liquidity and captures bid-ask spread"
-    
-    def generate_signal(self, symbol, current_price, historical_data):
-        # Market making requires real-time order book data
-        return None
-
-# =============================================
-# RISK MANAGEMENT MODULE
-# =============================================
-
-class RiskManager:
-    """Risk management module"""
-    
-    def __init__(self):
-        self.max_daily_loss = -0.05  # -5% daily loss limit
-        self.max_position_size = 0.1  # 10% of capital per position
-        self.max_correlation = 0.7  # Maximum correlation between positions
-        self.max_leverage = 3.0  # Maximum leverage
-        self.daily_loss = 0.0
-        self.position_correlation = {}
-    
-    def validate_signal(self, signal, current_positions, available_capital):
-        """Validate trading signal against risk rules"""
-        
-        # 1. Check daily loss limit
-        if self.daily_loss < self.max_daily_loss * available_capital:
-            return False, "Daily loss limit reached"
-        
-        # 2. Check position size
-        position_value = signal.get('quantity', 1) * signal.get('entry_price', 0)
-        if position_value > available_capital * self.max_position_size:
-            return False, "Position size exceeds limit"
-        
-        # 3. Check maximum positions
-        if len(current_positions) >= MAX_POSITIONS:
-            return False, "Maximum positions reached"
-        
-        # 4. Check correlation (simplified)
-        symbol = signal['symbol']
-        if symbol in self.position_correlation:
-            if self.position_correlation[symbol] > self.max_correlation:
-                return False, "High correlation with existing positions"
-        
-        # 5. Check volatility
-        if signal.get('volatility', 0) > 0.05:  # 5% daily volatility threshold
-            return False, "High volatility warning"
-        
-        return True, "Signal validated"
-    
-    def update_daily_loss(self, pnl):
-        """Update daily loss tracking"""
-        self.daily_loss += pnl
-    
-    def reset_daily_loss(self):
-        """Reset daily loss tracking"""
-        self.daily_loss = 0.0
+    def close_all_positions(self):
+        """Close all open positions"""
+        closed = []
+        for trade_id in list(self.positions.keys()):
+            current_price = self.market_data.get_real_time_price(self.positions[trade_id]['symbol'])
+            if self._close_position(trade_id, 'MANUAL_CLOSE_ALL'):
+                closed.append(trade_id)
+        return len(closed)
 
 # =============================================
 # STREAMLIT UI COMPONENTS
@@ -999,10 +902,12 @@ def create_trading_control_panel(trading_engine):
             if st.button("🚀 Start Algorithmic Trading", use_container_width=True, type="primary"):
                 trading_engine.market_data.subscribe(ALL_SYMBOLS[:20])
                 if trading_engine.start_trading():
+                    st.success("Algorithmic trading started!")
                     st.rerun()
         else:
             if st.button("🛑 Stop Algorithmic Trading", use_container_width=True, type="secondary"):
                 trading_engine.stop_trading()
+                st.success("Algorithmic trading stopped!")
                 st.rerun()
     
     with col2:
@@ -1012,30 +917,10 @@ def create_trading_control_panel(trading_engine):
             st.rerun()
     
     with col3:
-        if st.button("📊 Force Signal Scan", use_container_width=True):
-            signals = trading_engine._generate_signals()
-            st.info(f"Generated {len(signals)} signals")
+        if st.button("🗑️ Close All Positions", use_container_width=True):
+            closed = trading_engine.close_all_positions()
+            st.success(f"Closed {closed} positions!")
             st.rerun()
-    
-    # Trading mode selector
-    st.subheader("⚙️ Trading Mode")
-    mode_col1, mode_col2 = st.columns(2)
-    
-    with mode_col1:
-        trading_mode = st.selectbox(
-            "Select Trading Mode",
-            ["Paper Trading", "Live Trading"],
-            index=0
-        )
-    
-    with mode_col2:
-        if st.button("Apply Mode Change", use_container_width=True):
-            if trading_engine.trading_active:
-                st.warning("Stop trading before changing mode")
-            else:
-                new_mode = "paper" if trading_mode == "Paper Trading" else "live"
-                trading_engine.mode = new_mode
-                st.success(f"Trading mode changed to {trading_mode}")
 
 def create_portfolio_dashboard(trading_engine):
     """Create portfolio dashboard"""
@@ -1131,82 +1016,6 @@ def create_positions_dashboard(trading_engine):
             
             st.divider()
 
-def create_strategy_configuration(trading_engine):
-    """Create strategy configuration panel"""
-    st.subheader("🎯 Strategy Configuration")
-    
-    # Strategy selection
-    selected_strategies = st.multiselect(
-        "Select Active Strategies",
-        list(trading_engine.strategies.keys()),
-        default=['trend_following', 'mean_reversion', 'breakout']
-    )
-    
-    # Strategy parameters
-    st.subheader("⚙️ Strategy Parameters")
-    
-    for strategy_name in selected_strategies:
-        strategy = trading_engine.strategies[strategy_name]
-        
-        with st.expander(f"{strategy.name} Settings"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                min_confidence = st.slider(
-                    f"Minimum Confidence ({strategy.name})",
-                    min_value=0.5,
-                    max_value=0.95,
-                    value=0.65,
-                    step=0.05,
-                    key=f"conf_{strategy_name}"
-                )
-            
-            with col2:
-                max_position_size = st.slider(
-                    f"Max Position % ({strategy.name})",
-                    min_value=1,
-                    max_value=20,
-                    value=10,
-                    step=1,
-                    key=f"pos_{strategy_name}"
-                )
-    
-    # Risk parameters
-    st.subheader("🛡️ Risk Parameters")
-    
-    risk_col1, risk_col2, risk_col3 = st.columns(3)
-    
-    with risk_col1:
-        daily_loss_limit = st.number_input(
-            "Daily Loss Limit (%)",
-            min_value=1.0,
-            max_value=20.0,
-            value=5.0,
-            step=0.5
-        )
-    
-    with risk_col2:
-        risk_per_trade = st.number_input(
-            "Risk per Trade (%)",
-            min_value=0.5,
-            max_value=5.0,
-            value=2.0,
-            step=0.1
-        )
-    
-    with risk_col3:
-        max_positions = st.number_input(
-            "Max Positions",
-            min_value=1,
-            max_value=50,
-            value=10,
-            step=1
-        )
-    
-    if st.button("💾 Save Configuration", type="primary"):
-        trading_engine.risk_manager.max_daily_loss = -daily_loss_limit / 100
-        st.success("Configuration saved!")
-
 def create_signal_monitor(trading_engine):
     """Create real-time signal monitor"""
     st.subheader("🚦 Real-time Signal Monitor")
@@ -1227,7 +1036,7 @@ def create_signal_monitor(trading_engine):
         return
     
     # Display signals
-    for signal in signals[:5]:  # Show top 5
+    for signal in signals[:5]:
         with st.container():
             col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
             
@@ -1309,41 +1118,72 @@ def create_performance_analytics(trading_engine):
         with col4:
             avg_loss = losing_trades['P&L'].mean() if len(losing_trades) > 0 else 0
             st.metric("Avg Loss", f"${avg_loss:+,.2f}")
+
+def create_strategy_configuration(trading_engine):
+    """Create strategy configuration panel"""
+    st.subheader("🎯 Strategy Configuration")
+    
+    # Strategy selection
+    selected_strategies = st.multiselect(
+        "Select Active Strategies",
+        list(trading_engine.strategies.keys()),
+        default=['trend_following', 'mean_reversion', 'breakout']
+    )
+    
+    # Strategy parameters
+    st.subheader("⚙️ Strategy Parameters")
+    
+    for strategy_name in selected_strategies:
+        strategy = trading_engine.strategies[strategy_name]
         
-        # Equity curve
-        st.subheader("📈 Equity Curve")
-        
-        closed_trades = closed_trades.sort_values('Date')
-        closed_trades['Cumulative P&L'] = closed_trades['P&L'].cumsum() + trading_engine.initial_capital
-        
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=closed_trades['Date'],
-            y=closed_trades['Cumulative P&L'],
-            mode='lines',
-            name='Equity Curve',
-            line=dict(color='green', width=2)
-        ))
-        
-        fig.update_layout(
-            title="Portfolio Equity Curve",
-            xaxis_title="Date",
-            yaxis_title="Portfolio Value ($)",
-            height=400
+        with st.expander(f"{strategy.name} Settings"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                min_confidence = st.slider(
+                    f"Minimum Confidence ({strategy.name})",
+                    min_value=0.5,
+                    max_value=0.95,
+                    value=0.65,
+                    step=0.05,
+                    key=f"conf_{strategy_name}"
+                )
+    
+    # Risk parameters
+    st.subheader("🛡️ Risk Parameters")
+    
+    risk_col1, risk_col2, risk_col3 = st.columns(3)
+    
+    with risk_col1:
+        daily_loss_limit = st.number_input(
+            "Daily Loss Limit (%)",
+            min_value=1.0,
+            max_value=20.0,
+            value=5.0,
+            step=0.5
         )
-        
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Strategy performance
-        st.subheader("🎯 Strategy Performance")
-        
-        strategy_perf = closed_trades.groupby('Strategy').agg({
-            'P&L': ['count', 'sum', 'mean'],
-            'Symbol': 'nunique'
-        }).round(2)
-        
-        strategy_perf.columns = ['Trades', 'Total P&L', 'Avg P&L', 'Unique Symbols']
-        st.dataframe(strategy_perf, use_container_width=True)
+    
+    with risk_col2:
+        risk_per_trade = st.number_input(
+            "Risk per Trade (%)",
+            min_value=0.5,
+            max_value=5.0,
+            value=2.0,
+            step=0.1
+        )
+    
+    with risk_col3:
+        max_positions = st.number_input(
+            "Max Positions",
+            min_value=1,
+            max_value=50,
+            value=10,
+            step=1
+        )
+    
+    if st.button("💾 Save Configuration", type="primary"):
+        trading_engine.risk_manager.max_daily_loss = -daily_loss_limit / 100
+        st.success("Configuration saved!")
 
 # =============================================
 # MAIN APPLICATION
@@ -1356,12 +1196,8 @@ def main():
     if 'trading_engine' not in st.session_state:
         st.session_state.trading_engine = AlgorithmicTradingEngine(mode="paper")
     
-    if 'auto_refresh' not in st.session_state:
-        st.session_state.auto_refresh = True
-    
     # Auto-refresh for real-time updates
-    if st.session_state.auto_refresh:
-        st_autorefresh(interval=PRICE_REFRESH_MS, key="price_refresh")
+    st_autorefresh(interval=PRICE_REFRESH_MS, key="price_refresh")
     
     # Create header
     create_header()
@@ -1379,14 +1215,6 @@ def main():
             max_value=1000000,
             value=100000,
             step=1000
-        )
-        
-        risk_per_trade = st.slider(
-            "Risk per Trade (%)",
-            min_value=0.5,
-            max_value=5.0,
-            value=2.0,
-            step=0.1
         )
         
         # Market selection
@@ -1419,7 +1247,7 @@ def main():
         
         with col1:
             if st.button("Reset Session", use_container_width=True):
-                st.session_state.trading_engine = AlgorithmicTradingEngine(mode="paper")
+                st.session_state.trading_engine = AlgorithmicTradingEngine(mode="paper", initial_capital=initial_capital)
                 st.success("New trading session started!")
                 st.rerun()
         
@@ -1436,7 +1264,7 @@ def main():
         trading_engine = st.session_state.trading_engine
         status_color = "🟢" if trading_engine.trading_active else "🔴"
         st.markdown(f"**System Status:** {status_color} {'Running' if trading_engine.trading_active else 'Stopped'}")
-        st.markdown(f"**Mode:** {'Paper Trading' if trading_engine.mode == 'paper' else 'Live Trading'}")
+        st.markdown(f"**Mode:** {'Paper Trading'}")
         st.markdown(f"**Last Update:** {datetime.now().strftime('%H:%M:%S')}")
     
     # Main content with tabs
@@ -1472,8 +1300,7 @@ def main():
             st.metric("Queue Size", trading_engine.order_queue.qsize())
         
         with stat_col4:
-            uptime = "N/A"  # You can track uptime if needed
-            st.metric("System Uptime", uptime)
+            st.metric("System Status", "Running" if trading_engine.trading_active else "Stopped")
     
     with tab2:
         # Portfolio Dashboard
@@ -1490,7 +1317,7 @@ def main():
             with cols[i]:
                 try:
                     price = trading_engine.market_data.get_real_time_price(symbol)
-                    change = np.random.uniform(-2, 2)  # Simulated change
+                    change = np.random.uniform(-2, 2)
                     st.metric(
                         symbol,
                         f"${price:,.2f}" if price > 10 else f"{price:.4f}",
@@ -1502,28 +1329,6 @@ def main():
     with tab3:
         # Positions Dashboard
         create_positions_dashboard(trading_engine)
-        
-        # Position analytics
-        st.subheader("📊 Position Analytics")
-        
-        positions = trading_engine.get_open_positions()
-        if positions:
-            total_exposure = sum(p['quantity'] * p.get('current_price', p['entry_price']) 
-                               for p in positions)
-            avg_position_size = total_exposure / len(positions) if positions else 0
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.metric("Total Exposure", f"${total_exposure:,.2f}")
-            
-            with col2:
-                st.metric("Average Position", f"${avg_position_size:,.2f}")
-            
-            with col3:
-                buy_positions = sum(1 for p in positions if p['action'] == 'BUY')
-                sell_positions = len(positions) - buy_positions
-                st.metric("Bias", f"{buy_positions}B/{sell_positions}S")
     
     with tab4:
         # Signal Monitor
@@ -1573,30 +1378,13 @@ def main():
     with tab6:
         # Configuration
         create_strategy_configuration(trading_engine)
-        
-        # Exchange configuration
-        st.subheader("🏦 Exchange Configuration")
-        
-        exchange_col1, exchange_col2 = st.columns(2)
-        
-        with exchange_col1:
-            alpaca_key = st.text_input("Alpaca API Key", type="password")
-            alpaca_secret = st.text_input("Alpaca Secret Key", type="password")
-        
-        with exchange_col2:
-            binance_key = st.text_input("Binance API Key", type="password")
-            binance_secret = st.text_input("Binance Secret Key", type="password")
-        
-        if st.button("Test Connections", type="secondary"):
-            st.info("Testing exchange connections...")
-            # Here you would test the connections with provided keys
     
     # Footer
     st.markdown("---")
     st.markdown("""
     <div style="text-align: center; color: #666; font-size: 0.9em;">
-    <p><strong>RANTV Algorithmic Trading System v4.0</strong> | Multi-Strategy Algo Trading | Real-time Execution</p>
-    <p>⚠️ Algorithmic trading involves significant risk. Use at your own risk. Past performance does not guarantee future results.</p>
+    <p><strong>RANTV Algorithmic Trading System v4.0</strong> | Multi-Strategy Algo Trading | Paper Trading Mode</p>
+    <p>⚠️ This is for educational and testing purposes only. Paper trading uses simulated data.</p>
     </div>
     """, unsafe_allow_html=True)
 
