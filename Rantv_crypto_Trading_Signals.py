@@ -888,24 +888,24 @@ class RiskManager:
         self.daily_trades = 0
 
 # =============================================
-# ALGORITHMIC TRADING ENGINE WITH ACCURACY TRACKING
+# ALGORITHMIC TRADING ENGINE WITH SESSION-BASED HISTORY
 # =============================================
 
 class AlgorithmicTradingEngine:
-    """Complete Algorithmic Trading Engine with Accuracy Tracking"""
+    """Complete Algorithmic Trading Engine with Session-Based History"""
     
     def __init__(self, mode="paper", initial_capital=INITIAL_CAPITAL):
         self.mode = mode
         self.initial_capital = float(initial_capital)
         self.cash = float(initial_capital)
         self.positions = {}
-        self.trade_history = []
+        self.trade_history = []  # Session-based trade history (reset on new session)
         self.order_queue = queue.Queue()
         self.strategies = {}
         self.risk_manager = RiskManager()
         self.data_storage = DataStorage()
         
-        # Enhanced accuracy tracking
+        # Session-based accuracy tracking
         self.accuracy_metrics = {
             'total_signals': 0,
             'executed_trades': 0,
@@ -923,7 +923,7 @@ class AlgorithmicTradingEngine:
             'sharpe_ratio': 0.0
         }
         
-        # Strategy-specific performance tracking
+        # Session-based strategy performance tracking
         self.strategy_performance = defaultdict(lambda: {
             'signals': 0,
             'trades': 0,
@@ -957,8 +957,8 @@ class AlgorithmicTradingEngine:
         # Load strategies
         self._load_strategies()
         
-        # Load historical data
-        self._load_historical_data()
+        # NOTE: Do NOT load historical data from file
+        # We want fresh session-based data only
     
     def _load_strategies(self):
         """Load all trading strategies"""
@@ -971,43 +971,6 @@ class AlgorithmicTradingEngine:
             'breakout': BreakoutStrategy(),
             'vwap': VWAP_Strategy()
         }
-    
-    def _load_historical_data(self):
-        """Load historical trading data"""
-        try:
-            historical_trades = self.data_storage.load_trades()
-            if historical_trades:
-                self.trade_history = historical_trades
-                # Update accuracy metrics from history
-                self._update_accuracy_from_history()
-        except:
-            pass
-    
-    def _update_accuracy_from_history(self):
-        """Update accuracy metrics from trade history"""
-        for trade in self.trade_history:
-            if trade.get('status') == 'CLOSED':
-                pnl = trade.get('closed_pnl', 0)
-                self.accuracy_metrics['executed_trades'] += 1
-                self.accuracy_metrics['total_pnl'] += pnl
-                
-                if pnl > 0:
-                    self.accuracy_metrics['profitable_trades'] += 1
-                    self.accuracy_metrics['total_wins'] += pnl
-                else:
-                    self.accuracy_metrics['losing_trades'] += 1
-                    self.accuracy_metrics['total_losses'] += abs(pnl)
-                
-                # Update strategy performance
-                strategy = trade.get('strategy', 'unknown')
-                self.strategy_performance[strategy]['trades'] += 1
-                self.strategy_performance[strategy]['total_pnl'] += pnl
-                if pnl > 0:
-                    self.strategy_performance[strategy]['wins'] += 1
-                    self.strategy_performance[strategy]['total_wins'] += pnl
-                else:
-                    self.strategy_performance[strategy]['losses'] += 1
-                    self.strategy_performance[strategy]['total_losses'] += abs(pnl)
     
     def start_trading(self):
         """Start the algorithmic trading system"""
@@ -1096,13 +1059,38 @@ class AlgorithmicTradingEngine:
         except:
             pass
         
-        # Synthetic price for demo
+        # Synthetic price for demo - REALISTIC VALUES
         base_prices = {
             'BTC-USD': 45000,
             'ETH-USD': 2500,
+            'SOL-USD': 100,
+            'XRP-USD': 0.5,
+            'BNB-USD': 300,
+            'ADA-USD': 0.5,
+            'AVAX-USD': 40,
+            'DOT-USD': 7,
+            'DOGE-USD': 0.15,
+            'LINK-USD': 15,
             'AAPL': 180,
+            'MSFT': 320,
+            'GOOGL': 140,
+            'AMZN': 150,
+            'TSLA': 180,
+            'NVDA': 500,
+            'META': 350,
+            'JPM': 180,
+            'V': 250,
+            'WMT': 160,
             'GC=F': 1950,
-            'EURUSD=X': 1.08
+            'SI=F': 24,
+            'CL=F': 75,
+            'NG=F': 3,
+            'ZC=F': 450,
+            'EURUSD=X': 1.08,
+            'GBPUSD=X': 1.26,
+            'USDJPY=X': 148,
+            'USDCHF=X': 0.88,
+            'AUDUSD=X': 0.66
         }
         return base_prices.get(symbol, 100.0)
     
@@ -1113,7 +1101,16 @@ class AlgorithmicTradingEngine:
             data = ticker.history(period=period, interval=interval)
             return data
         except:
-            return pd.DataFrame()
+            # Return synthetic data for demo
+            dates = pd.date_range(end=datetime.now(), periods=100, freq='15min')
+            prices = np.random.normal(loc=100, scale=5, size=100).cumsum() + 100
+            return pd.DataFrame({
+                'Open': prices * 0.99,
+                'High': prices * 1.01,
+                'Low': prices * 0.98,
+                'Close': prices,
+                'Volume': np.random.randint(1000000, 5000000, size=100)
+            }, index=dates)
     
     def _execute_trade(self, signal):
         """Execute a trade based on signal"""
@@ -1176,9 +1173,11 @@ class AlgorithmicTradingEngine:
         quantity = max_risk_amount / risk_per_unit
         
         # For expensive assets like BTC, we need fractional shares
-        # Round to 4 decimal places for crypto, 2 for stocks
+        # Round to appropriate decimal places
         if 'USD' in signal['symbol'] or '-' in signal['symbol']:  # Crypto
             quantity = round(quantity, 4)
+        elif any(x in signal['symbol'] for x in ['=X', '=F']):  # Forex/Commodities
+            quantity = round(quantity, 2)
         else:  # Stocks
             quantity = round(quantity, 2)
         
@@ -1210,6 +1209,9 @@ class AlgorithmicTradingEngine:
         if signal['action'] == 'BUY' and position_value > self.cash:
             return False, f"Insufficient cash: ${self.cash:.2f} available, need ${position_value:.2f}"
         
+        # Create realistic position value based on $1000 capital
+        realistic_position_value = min(position_value, self.cash * 0.9)  # Max 90% of cash
+        
         trade = {
             'trade_id': trade_id,
             'symbol': signal['symbol'],
@@ -1224,28 +1226,25 @@ class AlgorithmicTradingEngine:
             'status': 'OPEN',
             'pnl': 0.0,
             'pnl_percentage': 0.0,
-            'position_value': position_value,
+            'position_value': realistic_position_value,
             'paper_trade': True,
             'confidence': signal.get('confidence', 0.5),
             'risk_reward': self._calculate_risk_reward(signal, current_price)
         }
         
-        # Update cash (simulated)
+        # Update cash (simulated) - REALISTIC
         if signal['action'] == 'BUY':
-            self.cash -= position_value
+            self.cash -= realistic_position_value
         elif signal['action'] == 'SELL':
-            self.cash += position_value
+            self.cash += realistic_position_value
         
         self.positions[trade_id] = trade
-        self.trade_history.append(trade)
+        self.trade_history.append(trade)  # Add to session history
         
         # Update risk manager
         self.risk_manager.increment_daily_trades()
         
-        # Save trades
-        self.data_storage.save_trades(self.trade_history)
-        
-        return True, f"Paper trade executed: {signal['action']} {quantity:.4f} {signal['symbol']} @ ${current_price:.2f} (Value: ${position_value:.2f})"
+        return True, f"Trade executed: {signal['action']} {quantity:.4f} {signal['symbol']} @ ${current_price:.2f} (Value: ${realistic_position_value:.2f})"
     
     def _calculate_risk_reward(self, signal, entry_price):
         """Calculate risk-reward ratio"""
@@ -1335,7 +1334,7 @@ class AlgorithmicTradingEngine:
         position['closed_pnl_percentage'] = pnl_percentage
         position['exit_reason'] = reason
         
-        # Update accuracy metrics
+        # Update accuracy metrics - SESSION BASED ONLY
         self.accuracy_metrics['executed_trades'] += 1
         self.accuracy_metrics['total_pnl'] += pnl
         
@@ -1349,7 +1348,7 @@ class AlgorithmicTradingEngine:
         # Update risk manager
         self.risk_manager.update_daily_loss(pnl)
         
-        # Update strategy performance
+        # Update strategy performance - SESSION BASED ONLY
         strategy = position.get('strategy', 'unknown')
         self.strategy_performance[strategy]['trades'] += 1
         self.strategy_performance[strategy]['total_pnl'] += pnl
@@ -1364,13 +1363,10 @@ class AlgorithmicTradingEngine:
         # Remove from open positions
         del self.positions[trade_id]
         
-        # Save trades
-        self.data_storage.save_trades(self.trade_history)
-        
         return True
     
     def _update_performance(self):
-        """Update performance metrics - REALISTIC VALUES"""
+        """Update performance metrics - SESSION BASED ONLY"""
         # Calculate win rate
         total_trades = self.accuracy_metrics['executed_trades']
         winning_trades = self.accuracy_metrics['profitable_trades']
@@ -1378,7 +1374,7 @@ class AlgorithmicTradingEngine:
         if total_trades > 0:
             self.accuracy_metrics['win_rate'] = winning_trades / total_trades
         
-        # Calculate profit factor with realistic values
+        # Calculate profit factor
         if self.accuracy_metrics['total_losses'] > 0:
             self.accuracy_metrics['profit_factor'] = self.accuracy_metrics['total_wins'] / self.accuracy_metrics['total_losses']
         elif self.accuracy_metrics['total_wins'] > 0:
@@ -1420,7 +1416,7 @@ class AlgorithmicTradingEngine:
                                                            key=lambda x: x[1]['win_rate'])[0]
     
     def get_portfolio_summary(self):
-        """Get portfolio summary"""
+        """Get portfolio summary - SESSION BASED"""
         total_value = self.cash
         open_pnl = 0
         
@@ -1451,15 +1447,15 @@ class AlgorithmicTradingEngine:
         return list(self.positions.values())
     
     def get_trade_history(self, limit=100):
-        """Get trade history"""
+        """Get trade history - SESSION BASED ONLY"""
         return self.trade_history[-limit:] if self.trade_history else []
     
     def get_strategy_performance(self):
-        """Get detailed strategy performance"""
+        """Get detailed strategy performance - SESSION BASED"""
         return dict(self.strategy_performance)
     
     def get_accuracy_report(self):
-        """Get comprehensive accuracy report"""
+        """Get comprehensive accuracy report - SESSION BASED"""
         return {
             'accuracy_metrics': self.accuracy_metrics,
             'session_metrics': self.session_metrics,
@@ -1488,8 +1484,8 @@ def create_header():
     st.markdown("""
     <div style="text-align: center; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 10px; margin-bottom: 20px;">
         <h1 style="color: white; margin: 0;">🤖 RANTV ALGORITHMIC TRADING SYSTEM</h1>
-        <p style="color: rgba(255,255,255,0.9); margin: 5px 0 0 0;">Smart Money Concept & Multi-Strategy Trading with Accuracy Tracking</p>
-        <p style="color: rgba(255,255,255,0.7); margin: 5px 0 0 0; font-size: 0.9em;">Capital: $1,000 | Realistic P&L | No Duplicate Trades</p>
+        <p style="color: rgba(255,255,255,0.9); margin: 5px 0 0 0;">Smart Money Concept & Multi-Strategy Trading</p>
+        <p style="color: rgba(255,255,255,0.7); margin: 5px 0 0 0; font-size: 0.9em;">💰 <strong>Session-Based Trading | $1,000 Capital | Realistic P&L</strong></p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1501,12 +1497,12 @@ def create_trading_control_panel(trading_engine):
     
     with col1:
         if not trading_engine.trading_active:
-            if st.button("🚀 Start Algorithmic Trading", use_container_width=True, type="primary"):
+            if st.button("🚀 Start Trading", use_container_width=True, type="primary"):
                 if trading_engine.start_trading():
                     st.success("Algorithmic trading started!")
                     st.rerun()
         else:
-            if st.button("🛑 Stop Algorithmic Trading", use_container_width=True, type="secondary"):
+            if st.button("🛑 Stop Trading", use_container_width=True, type="secondary"):
                 trading_engine.stop_trading()
                 st.success("Algorithmic trading stopped!")
                 st.rerun()
@@ -1524,9 +1520,10 @@ def create_trading_control_panel(trading_engine):
             st.rerun()
     
     with col4:
-        if st.button("📊 Reset Daily Metrics", use_container_width=True):
+        if st.button("📊 Reset Session", use_container_width=True):
+            # Reset session metrics but keep engine running
             trading_engine.reset_daily_metrics()
-            st.success("Daily metrics reset!")
+            st.success("Session metrics reset!")
             st.rerun()
 
 def create_portfolio_dashboard(trading_engine):
@@ -1535,37 +1532,34 @@ def create_portfolio_dashboard(trading_engine):
     
     portfolio = trading_engine.get_portfolio_summary()
     
+    # Portfolio metrics
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
+        pnl_color = "normal" if portfolio['total_pnl'] >= 0 else "inverse"
         st.metric(
             "Total Value",
             f"${portfolio['total_value']:,.2f}",
-            delta=f"${portfolio['total_pnl']:+,.2f}"
-        )
-    
-    with col2:
-        st.metric(
-            "Available Cash",
-            f"${portfolio['cash']:,.2f}"
-        )
-    
-    with col3:
-        st.metric(
-            "Open Positions",
-            portfolio['open_positions']
-        )
-    
-    with col4:
-        pnl_color = "inverse" if portfolio['open_pnl'] < 0 else "normal"
-        st.metric(
-            "Open P&L",
-            f"${portfolio['open_pnl']:+,.2f}",
+            delta=f"${portfolio['total_pnl']:+,.2f}",
             delta_color=pnl_color
         )
     
-    # Profit/Loss Dashboard
-    st.subheader("💰 Profit & Loss Dashboard")
+    with col2:
+        st.metric("Available Cash", f"${portfolio['cash']:,.2f}")
+    
+    with col3:
+        st.metric("Open Positions", portfolio['open_positions'])
+    
+    with col4:
+        open_pnl_color = "normal" if portfolio['open_pnl'] >= 0 else "inverse"
+        st.metric(
+            "Open P&L",
+            f"${portfolio['open_pnl']:+,.2f}",
+            delta_color=open_pnl_color
+        )
+    
+    # P&L Dashboard
+    st.subheader("💰 Profit & Loss Dashboard (Session)")
     
     pl_col1, pl_col2, pl_col3, pl_col4, pl_col5, pl_col6 = st.columns(6)
     
@@ -1637,22 +1631,22 @@ def create_positions_dashboard(trading_engine):
             st.divider()
 
 def create_trading_history_dashboard(trading_engine):
-    """Create comprehensive trading history dashboard - OPTIMIZED"""
-    st.subheader("📋 Trading History & Accuracy Analysis")
+    """Create comprehensive trading history dashboard - SESSION BASED"""
+    st.subheader("📋 Trading History (Current Session Only)")
     
-    # Get trade history
+    # Get session trade history
     trade_history = trading_engine.get_trade_history(100)
     
     if not trade_history:
-        st.info("No trade history available")
+        st.info("No trades in current session. Start trading to generate trades!")
         return
     
     # Create tabs for different views
-    tab1, tab2, tab3, tab4 = st.tabs(["All Trades", "Performance Charts", "Strategy Analysis", "Accuracy Report"])
+    tab1, tab2, tab3 = st.tabs(["All Trades", "Performance Charts", "Strategy Analysis"])
     
     with tab1:
         # Display all trades in a table
-        st.subheader("📊 All Trades (Realistic $1000 Capital)")
+        st.subheader("📊 All Trades (Current Session)")
         
         # Prepare data for display
         history_data = []
@@ -1670,7 +1664,7 @@ def create_trading_history_dashboard(trading_engine):
                 if trade.get('position_value', 0) > 0:
                     pnl_percentage = (pnl / trade.get('position_value', 0)) * 100
             
-            # Format data like your image
+            # Format data
             history_data.append({
                 'ID': idx,
                 'Symbol': trade['symbol'],
@@ -1682,7 +1676,7 @@ def create_trading_history_dashboard(trading_engine):
                 'P&L': f"${pnl:+,.2f}",
                 'P&L %': f"{pnl_percentage:+.1f}%" if pnl_percentage else "N/A",
                 'Value': f"${trade.get('position_value', 0):.2f}",
-                'S': 'C' if trade['status'] == 'CLOSED' else 'O'
+                'Status': trade['status'][0]  # 'O' for Open, 'C' for Closed
             })
         
         if history_data:
@@ -1696,31 +1690,19 @@ def create_trading_history_dashboard(trading_engine):
             styled_df = df.style.applymap(color_pnl, subset=['P&L', 'P&L %'])
             st.dataframe(styled_df, use_container_width=True, height=400)
             
-            # Summary statistics
-            st.subheader("📊 Trade Summary")
-            
-            closed_trades = [t for t in trade_history if t.get('status') == 'CLOSED']
-            if closed_trades:
-                total_trades = len(closed_trades)
-                winning_trades = len([t for t in closed_trades if t.get('closed_pnl', 0) > 0])
-                losing_trades = len([t for t in closed_trades if t.get('closed_pnl', 0) < 0])
-                win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
-                total_pnl = sum([t.get('closed_pnl', 0) for t in closed_trades])
-                avg_pnl = total_pnl / total_trades if total_trades > 0 else 0
-                
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Total Trades", total_trades)
-                with col2:
-                    st.metric("Winning Trades", winning_trades)
-                with col3:
-                    st.metric("Losing Trades", losing_trades)
-                with col4:
-                    st.metric("Win Rate", f"{win_rate:.1f}%")
+            # Export option
+            if st.button("📥 Export Session History"):
+                csv = df.to_csv(index=False)
+                st.download_button(
+                    label="Download CSV",
+                    data=csv,
+                    file_name=f"session_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
     
     with tab2:
-        # Performance charts
-        st.subheader("📈 Performance Charts (Realistic Scale)")
+        # Performance charts for current session
+        st.subheader("📈 Performance Charts (Current Session)")
         
         # Filter closed trades
         closed_trades = [t for t in trade_history if t.get('status') == 'CLOSED']
@@ -1743,7 +1725,7 @@ def create_trading_history_dashboard(trading_engine):
             if not df_trades.empty:
                 df_trades = df_trades.sort_values('Date')
                 df_trades['Cumulative P&L'] = df_trades['P&L'].cumsum()
-                df_trades['Rolling Win Rate'] = (df_trades['P&L'] > 0).rolling(window=10).mean()
+                df_trades['Rolling Win Rate'] = (df_trades['P&L'] > 0).rolling(window=5, min_periods=1).mean()
                 
                 # Cumulative P&L chart
                 fig1 = go.Figure()
@@ -1756,59 +1738,69 @@ def create_trading_history_dashboard(trading_engine):
                     hovertemplate='Date: %{x}<br>Cumulative P&L: $%{y:.2f}<extra></extra>'
                 ))
                 fig1.update_layout(
-                    title="Cumulative P&L Over Time ($1000 Capital)",
-                    xaxis_title="Date",
+                    title="Cumulative P&L (Current Session)",
+                    xaxis_title="Time",
                     yaxis_title="Cumulative P&L ($)",
-                    height=400,
-                    yaxis=dict(range=[min(df_trades['Cumulative P&L'].min() - 10, -50), 
-                                     max(df_trades['Cumulative P&L'].max() + 10, 50)])
+                    height=400
                 )
                 st.plotly_chart(fig1, use_container_width=True)
                 
-                # Win rate rolling chart
-                fig2 = go.Figure()
-                fig2.add_trace(go.Scatter(
+                # Daily P&L bar chart
+                if len(df_trades) > 1:
+                    df_trades['Hour'] = pd.to_datetime(df_trades['Date']).dt.floor('H')
+                    hourly_pnl = df_trades.groupby('Hour')['P&L'].sum().reset_index()
+                    
+                    fig2 = go.Figure()
+                    colors = ['green' if x >= 0 else 'red' for x in hourly_pnl['P&L']]
+                    fig2.add_trace(go.Bar(
+                        x=hourly_pnl['Hour'],
+                        y=hourly_pnl['P&L'],
+                        name='Hourly P&L',
+                        marker_color=colors
+                    ))
+                    fig2.update_layout(
+                        title="Hourly P&L Distribution",
+                        xaxis_title="Hour",
+                        yaxis_title="P&L ($)",
+                        height=400
+                    )
+                    st.plotly_chart(fig2, use_container_width=True)
+                
+                # Win rate chart
+                fig3 = go.Figure()
+                fig3.add_trace(go.Scatter(
                     x=df_trades['Date'],
                     y=df_trades['Rolling Win Rate'] * 100,
                     mode='lines',
-                    name='Rolling Win Rate (10 trades)',
+                    name='Rolling Win Rate (5 trades)',
                     line=dict(color='blue', width=2)
                 ))
-                fig2.add_hline(y=50, line_dash="dash", line_color="red")
-                fig2.update_layout(
-                    title="Rolling Win Rate (10-Trade Window)",
-                    xaxis_title="Date",
+                fig3.add_hline(y=50, line_dash="dash", line_color="red")
+                fig3.update_layout(
+                    title="Rolling Win Rate",
+                    xaxis_title="Time",
                     yaxis_title="Win Rate (%)",
                     height=400,
                     yaxis=dict(range=[0, 100])
                 )
-                st.plotly_chart(fig2, use_container_width=True)
-                
-                # P&L distribution
-                fig3 = px.histogram(df_trades, x='P&L', 
-                                   title="P&L Distribution (Realistic $1000 Scale)",
-                                   nbins=20,
-                                   color_discrete_sequence=['green' if x > 0 else 'red' for x in df_trades['P&L']])
-                fig3.update_layout(
-                    height=400,
-                    xaxis_title="P&L ($)",
-                    yaxis_title="Count",
-                    xaxis=dict(range=[min(df_trades['P&L'].min() - 5, -30), 
-                                     max(df_trades['P&L'].max() + 5, 30)])
-                )
                 st.plotly_chart(fig3, use_container_width=True)
+        else:
+            st.info("No closed trades in current session yet.")
     
     with tab3:
-        # Strategy analysis
-        st.subheader("🎯 Strategy Performance Analysis (Realistic)")
+        # Strategy analysis for current session
+        st.subheader("🎯 Strategy Performance (Current Session)")
         
         strategy_perf = trading_engine.get_strategy_performance()
         
         if strategy_perf:
-            # Prepare strategy performance data
-            perf_data = []
-            for strategy, data in strategy_perf.items():
-                if data['trades'] > 0:
+            # Filter strategies with trades
+            strategies_with_trades = {k: v for k, v in strategy_perf.items() if v['trades'] > 0}
+            
+            if strategies_with_trades:
+                # Prepare strategy performance data
+                perf_data = []
+                for strategy, data in strategies_with_trades.items():
                     perf_data.append({
                         'Strategy': strategy,
                         'Trades': data['trades'],
@@ -1819,62 +1811,24 @@ def create_trading_history_dashboard(trading_engine):
                         'Avg Win': f"${data['avg_win']:+,.2f}" if data['wins'] > 0 else "N/A",
                         'Avg Loss': f"${data['avg_loss']:+,.2f}" if data['losses'] > 0 else "N/A"
                     })
-            
-            if perf_data:
+                
                 df_perf = pd.DataFrame(perf_data)
                 
-                # Display as table like your image
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.markdown("**Strategy**")
-                    for row in df_perf.itertuples():
-                        st.write(row.Strategy)
-                
-                with col2:
-                    st.markdown("**Trades**")
-                    for row in df_perf.itertuples():
-                        st.write(row.Trades)
-                
-                with col3:
-                    st.markdown("**Wins**")
-                    for row in df_perf.itertuples():
-                        st.write(row.Wins)
+                # Display as table
+                st.dataframe(df_perf, use_container_width=True)
                 
                 # Strategy comparison chart
-                fig = px.bar(df_perf, x='Strategy', y='Win Rate',
-                           title="Strategy Win Rate Comparison",
-                           color='Total P&L',
-                           color_continuous_scale='RdYlGn')
-                fig.update_layout(height=400)
-                st.plotly_chart(fig, use_container_width=True)
-    
-    with tab4:
-        # Accuracy report
-        st.subheader("📊 Comprehensive Accuracy Report")
-        
-        accuracy_report = trading_engine.get_accuracy_report()
-        accuracy_metrics = accuracy_report['accuracy_metrics']
-        session_metrics = accuracy_report['session_metrics']
-        
-        # Overall accuracy metrics
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Total Signals", accuracy_metrics['total_signals'])
-            st.metric("Executed Trades", accuracy_metrics['executed_trades'])
-        
-        with col2:
-            st.metric("Win Rate", f"{accuracy_metrics['win_rate']:.1%}")
-            st.metric("Profit Factor", f"{accuracy_metrics['profit_factor']:.2f}")
-        
-        with col3:
-            st.metric("Total P&L", f"${accuracy_metrics['total_pnl']:+,.2f}")
-            st.metric("Avg Win", f"${accuracy_metrics['average_win']:+,.2f}")
-        
-        with col4:
-            st.metric("Avg Loss", f"${accuracy_metrics['average_loss']:+,.2f}")
-            st.metric("Max Win Streak", accuracy_metrics['max_winning_streak'])
+                if len(df_perf) > 1:
+                    fig = px.bar(df_perf, x='Strategy', y='Win Rate',
+                               title="Strategy Win Rate Comparison",
+                               color='Total P&L',
+                               color_continuous_scale='RdYlGn')
+                    fig.update_layout(height=400)
+                    st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No strategy has executed trades in this session yet.")
+        else:
+            st.info("No strategy performance data available.")
 
 def create_signal_generator(trading_engine):
     """Create signal generator dashboard"""
@@ -1958,64 +1912,6 @@ def create_signal_generator(trading_engine):
             else:
                 st.info("No signals found with current parameters")
 
-def create_strategy_configuration(trading_engine):
-    """Create strategy configuration panel"""
-    st.subheader("⚙️ Strategy Configuration")
-    
-    # Strategy selection and weighting
-    st.subheader("📊 Strategy Weighting")
-    
-    strategies = list(trading_engine.strategies.keys())
-    weights = {}
-    
-    for strategy in strategies:
-        weight = st.slider(
-            f"Weight: {strategy}",
-            min_value=0,
-            max_value=10,
-            value=5,
-            step=1,
-            key=f"weight_{strategy}"
-        )
-        weights[strategy] = weight
-    
-    # Risk parameters
-    st.subheader("🛡️ Risk Management")
-    
-    risk_col1, risk_col2, risk_col3 = st.columns(3)
-    
-    with risk_col1:
-        daily_loss_limit = st.number_input(
-            "Daily Loss Limit (%)",
-            min_value=1.0,
-            max_value=20.0,
-            value=5.0,
-            step=0.5
-        )
-    
-    with risk_col2:
-        risk_per_trade = st.number_input(
-            "Risk per Trade (%)",
-            min_value=0.5,
-            max_value=5.0,
-            value=2.0,
-            step=0.1
-        )
-    
-    with risk_col3:
-        max_daily_trades = st.number_input(
-            "Max Daily Trades",
-            min_value=5,
-            max_value=50,
-            value=15,
-            step=1
-        )
-    
-    if st.button("💾 Save Configuration", type="primary"):
-        trading_engine.risk_manager.max_daily_loss = -daily_loss_limit / 100
-        trading_engine.risk_manager.max_daily_trades = max_daily_trades
-        st.success("Configuration saved!")
-
 # =============================================
 # MAIN APPLICATION
 # =============================================
@@ -2060,7 +1956,8 @@ def main():
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            if st.button("New Session", use_container_width=True):
+            if st.button("New Session", use_container_width=True, type="primary"):
+                # Create new engine with fresh session
                 st.session_state.trading_engine = AlgorithmicTradingEngine(mode="paper", initial_capital=initial_capital)
                 st.success("New trading session started!")
                 st.rerun()
@@ -2070,17 +1967,17 @@ def main():
                 st.rerun()
         
         with col3:
-            if st.button("Export Data", use_container_width=True, type="secondary"):
-                trading_engine = st.session_state.trading_engine
-                if trading_engine.trade_history:
-                    df = pd.DataFrame(trading_engine.trade_history)
-                    csv = df.to_csv(index=False)
-                    st.download_button(
-                        label="Download All Data",
-                        data=csv,
-                        file_name="trading_data.csv",
-                        mime="text/csv"
-                    )
+            trading_engine = st.session_state.trading_engine
+            if trading_engine.trade_history:
+                df = pd.DataFrame(trading_engine.trade_history)
+                csv = df.to_csv(index=False)
+                st.download_button(
+                    label="Export Session",
+                    data=csv,
+                    file_name=f"session_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
         
         # System status
         st.markdown("---")
@@ -2089,19 +1986,17 @@ def main():
         st.markdown(f"**System Status:** {status_color} {'Running' if trading_engine.trading_active else 'Stopped'}")
         st.markdown(f"**Mode:** Paper Trading")
         st.markdown(f"**Capital:** ${trading_engine.initial_capital:,.2f}")
-        st.markdown(f"**Risk per Trade:** ${trading_engine.initial_capital * RISK_PER_TRADE:.2f} ({RISK_PER_TRADE*100:.0f}%)")
-        st.markdown(f"**Strategies Active:** {len(trading_engine.strategies)}")
+        st.markdown(f"**Session Start:** {trading_engine.session_metrics['start_time'].strftime('%H:%M:%S')}")
+        st.markdown(f"**Trades This Session:** {trading_engine.accuracy_metrics['executed_trades']}")
         st.markdown(f"**Last Update:** {datetime.now().strftime('%H:%M:%S')}")
     
     # Main content with tabs
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "🎮 Control",
         "📊 Portfolio",
         "💰 Positions",
         "📋 History",
-        "🚦 Signals",
-        "⚙️ Config",
-        "📈 Analytics"
+        "🚦 Signals"
     ])
     
     trading_engine = st.session_state.trading_engine
@@ -2111,10 +2006,9 @@ def main():
         create_trading_control_panel(trading_engine)
         
         # Quick stats
-        st.subheader("⚡ Quick Stats")
+        st.subheader("⚡ Quick Stats (Current Session)")
         
         portfolio = trading_engine.get_portfolio_summary()
-        accuracy_report = trading_engine.get_accuracy_report()
         
         stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
         
@@ -2122,13 +2016,13 @@ def main():
             st.metric("Active Strategies", len(trading_engine.strategies))
         
         with stat_col2:
-            st.metric("Total Signals", accuracy_report['accuracy_metrics']['total_signals'])
+            st.metric("Total Signals", portfolio['total_trades'])
         
         with stat_col3:
-            st.metric("Executed Trades", portfolio['total_trades'])
+            st.metric("Open Positions", portfolio['open_positions'])
         
         with stat_col4:
-            st.metric("System Status", "Running" if trading_engine.trading_active else "Stopped")
+            st.metric("Session P&L", f"${portfolio['total_pnl']:+,.2f}")
     
     with tab2:
         # Portfolio Dashboard
@@ -2146,71 +2040,14 @@ def main():
         # Signal Generator
         create_signal_generator(trading_engine)
     
-    with tab6:
-        # Configuration
-        create_strategy_configuration(trading_engine)
-    
-    with tab7:
-        # Real-time Analytics
-        st.subheader("📈 Real-time Analytics")
-        
-        # Market overview
-        st.subheader("🌐 Market Overview")
-        
-        key_symbols = ["BTC-USD", "ETH-USD", "AAPL", "GC=F", "EURUSD=X"]
-        cols = st.columns(len(key_symbols))
-        
-        for i, symbol in enumerate(key_symbols):
-            with cols[i]:
-                try:
-                    price = trading_engine._get_current_price(symbol)
-                    change = np.random.uniform(-2, 2)
-                    st.metric(
-                        symbol,
-                        f"${price:,.2f}" if price > 10 else f"{price:.4f}",
-                        delta=f"{change:+.1f}%"
-                    )
-                except:
-                    st.metric(symbol, "N/A")
-        
-        # Strategy heatmap
-        st.subheader("🎯 Strategy Performance Heatmap")
-        
-        strategy_perf = trading_engine.get_strategy_performance()
-        if strategy_perf:
-            perf_data = []
-            for strategy, data in strategy_perf.items():
-                if data['trades'] > 0:
-                    perf_data.append({
-                        'Strategy': strategy,
-                        'Win Rate': data['win_rate'],
-                        'Trades': data['trades'],
-                        'Total P&L': data['total_pnl']
-                    })
-            
-            if perf_data:
-                df_heatmap = pd.DataFrame(perf_data)
-                
-                # Create heatmap
-                fig = px.imshow(
-                    df_heatmap[['Win Rate', 'Trades', 'Total P&L']].T,
-                    labels=dict(x="Strategy", y="Metric", color="Value"),
-                    x=df_heatmap['Strategy'].tolist(),
-                    y=['Win Rate', 'Trades', 'Total P&L'],
-                    color_continuous_scale='RdYlGn',
-                    aspect="auto"
-                )
-                fig.update_layout(height=300)
-                st.plotly_chart(fig, use_container_width=True)
-    
     # Footer
     st.markdown("---")
     st.markdown("""
     <div style="text-align: center; color: #666; font-size: 0.9em;">
-    <p><strong>RANTV Algorithmic Trading System v5.0</strong> | Smart Money Concept | Multi-Strategy | Accuracy Tracking</p>
+    <p><strong>RANTV Algorithmic Trading System v6.0</strong> | Session-Based Trading | Smart Money Concept</p>
     <p>⚠️ This is for educational and paper trading purposes only. All trades are simulated.</p>
-    <p>💰 <strong>Realistic $1000 Capital Trading</strong> | ⚠️ No Duplicate Trades | 📊 Realistic P&L Calculations</p>
-    <p><em>Note: Position sizes are calculated based on 2% risk per trade ($20 risk on $1000 capital)</em></p>
+    <p>💰 <strong>Session-Based History Only | $1000 Capital | Realistic P&L</strong></p>
+    <p><em>Note: Each browser session starts fresh. History is not saved between sessions.</em></p>
     </div>
     """, unsafe_allow_html=True)
 
