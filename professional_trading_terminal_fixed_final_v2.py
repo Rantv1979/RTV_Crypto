@@ -607,7 +607,7 @@ def main():
     # Timeframe selection
     timeframe = st.sidebar.selectbox(
         "Timeframe",
-        ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1wk"],
+        ["1m", "5m", "15m", "30m", "1h", "1d", "1wk"],
         index=4
     )
     
@@ -1088,3 +1088,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
