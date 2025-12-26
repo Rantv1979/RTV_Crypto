@@ -1,32 +1,20 @@
-"""
-Streamlit Trading Bot for Commodities & Cryptocurrencies
-No external TA libraries required - uses yfinance and pandas only
-Supports: USOIL, GOLD, BTC, SOLANA, XRP, ETH
-"""
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import yfinance as yf
+import ccxt
+import pandas_ta as ta
 from datetime import datetime, timedelta
-import sqlite3
-import json
-import time
 import warnings
-from typing import Dict, List, Tuple, Optional
-import logging
-import os
-
 warnings.filterwarnings('ignore')
 
 # Page configuration
 st.set_page_config(
-    page_title="Multi-Asset Trading Bot",
-    page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="SMC Multi-Asset Trading Dashboard",
+    page_icon="📊",
+    layout="wide"
 )
 
 # Custom CSS
@@ -34,1216 +22,875 @@ st.markdown("""
 <style>
     .main-header {
         font-size: 2.5rem;
-        color: #1E88E5;
+        color: #1E3A8A;
         text-align: center;
-        margin-bottom: 2rem;
+        margin-bottom: 1rem;
     }
-    .metric-card {
-        background-color: #f0f2f6;
+    .asset-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
         padding: 1rem;
-        border-radius: 0.5rem;
+        border-radius: 10px;
         margin: 0.5rem;
+        text-align: center;
+        cursor: pointer;
+        transition: transform 0.3s;
     }
-    .positive {
-        color: #00C853;
+    .asset-card:hover {
+        transform: translateY(-5px);
     }
-    .negative {
-        color: #FF5252;
+    .crypto-card {
+        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
     }
-    .signal-buy {
-        background-color: #C8E6C9;
+    .forex-card {
+        background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+    }
+    .commodity-card {
+        background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);
+    }
+    .signal-bullish {
+        background-color: #D1FAE5;
+        color: #065F46;
         padding: 0.5rem;
-        border-radius: 0.25rem;
+        border-radius: 5px;
         font-weight: bold;
+        border-left: 4px solid #10B981;
     }
-    .signal-sell {
-        background-color: #FFCDD2;
+    .signal-bearish {
+        background-color: #FEE2E2;
+        color: #991B1B;
         padding: 0.5rem;
-        border-radius: 0.25rem;
+        border-radius: 5px;
         font-weight: bold;
+        border-left: 4px solid #EF4444;
     }
+    .concept-badge {
+        display: inline-block;
+        padding: 0.25rem 0.75rem;
+        border-radius: 15px;
+        font-size: 0.85rem;
+        margin: 0.2rem;
+    }
+    .trend-up { background-color: #D1FAE5; color: #065F46; }
+    .trend-down { background-color: #FEE2E2; color: #991B1B; }
+    .trend-neutral { background-color: #E5E7EB; color: #374151; }
 </style>
 """, unsafe_allow_html=True)
 
-class DataHandler:
-    """Handles data collection for multiple asset types"""
+# Asset Configuration
+ASSET_CONFIG = {
+    # Cryptocurrencies
+    "crypto": {
+        "BTC/USDT": {"symbol": "BTC-USD", "exchange": "binance", "type": "crypto"},
+        "ETH/USDT": {"symbol": "ETH-USD", "exchange": "binance", "type": "crypto"},
+        "SOL/USD": {"symbol": "SOL-USD", "exchange": "binance", "type": "crypto"},
+        "XRP/USD": {"symbol": "XRP-USD", "exchange": "binance", "type": "crypto"},
+        "ADA/USD": {"symbol": "ADA-USD", "exchange": "binance", "type": "crypto"},
+    },
     
-    # Asset mapping
-    ASSET_SYMBOLS = {
-        'USOIL': 'CL=F',  # Crude Oil Futures
-        'GOLD': 'GC=F',   # Gold Futures
-        'BTC': 'BTC-USD',
-        'SOLANA': 'SOL-USD',
-        'XRP': 'XRP-USD',
-        'ETH': 'ETH-USD'
+    # Forex Pairs
+    "forex": {
+        "EUR/USD": {"symbol": "EURUSD=X", "exchange": "oanda", "type": "forex"},
+        "GBP/USD": {"symbol": "GBPUSD=X", "exchange": "oanda", "type": "forex"},
+        "USD/JPY": {"symbol": "JPY=X", "exchange": "oanda", "type": "forex"},
+        "USD/CHF": {"symbol": "CHF=X", "exchange": "oanda", "type": "forex"},
+        "AUD/USD": {"symbol": "AUDUSD=X", "exchange": "oanda", "type": "forex"},
+        "NZD/USD": {"symbol": "NZDUSD=X", "exchange": "oanda", "type": "forex"},
+        "USD/CAD": {"symbol": "CAD=X", "exchange": "oanda", "type": "forex"},
+    },
+    
+    # Commodities
+    "commodities": {
+        "Gold": {"symbol": "GC=F", "exchange": "comex", "type": "commodity"},
+        "Silver": {"symbol": "SI=F", "exchange": "comex", "type": "commodity"},
+        "Crude Oil": {"symbol": "CL=F", "exchange": "nymex", "type": "commodity"},
+        "Natural Gas": {"symbol": "NG=F", "exchange": "nymex", "type": "commodity"},
+        "Copper": {"symbol": "HG=F", "exchange": "comex", "type": "commodity"},
+        "Brent Oil": {"symbol": "BZ=F", "exchange": "ice", "type": "commodity"},
     }
-    
-    # Timeframe mapping
-    TIMEFRAME_MAP = {
-        '15m': '15m',
-        '1h': '60m',
-        '4h': '60m',
-        '1d': '1d'
-    }
-    
-    def __init__(self, timeframe: str = '15m', lookback_days: int = 30):
-        self.timeframe = timeframe
-        self.lookback_days = lookback_days
-        self.data_cache = {}
+}
+
+# Initialize CCXT exchanges
+exchanges = {
+    'binance': ccxt.binance(),
+    'kraken': ccxt.kraken(),
+}
+
+# Data fetching functions
+def fetch_crypto_data(symbol, timeframe='1h', limit=500):
+    """Fetch cryptocurrency data from CCXT"""
+    try:
+        exchange = exchanges['binance']
+        symbol_ccxt = symbol.replace('-USD', '/USDT')
         
-    def fetch_data(self, asset_name: str) -> pd.DataFrame:
-        """Fetch historical data for an asset"""
-        try:
-            symbol = self.ASSET_SYMBOLS.get(asset_name, asset_name)
-            yf_timeframe = self.TIMEFRAME_MAP.get(self.timeframe, '15m')
-            
-            # Calculate date range
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=self.lookback_days)
-            
-            # Download data
-            ticker = yf.Ticker(symbol)
-            data = ticker.history(
-                start=start_date,
-                end=end_date,
-                interval=yf_timeframe
-            )
-            
-            if data.empty:
-                st.warning(f"No data found for {asset_name} ({symbol})")
-                return pd.DataFrame()
-            
-            # Calculate all indicators
-            data = self.calculate_indicators(data)
-            self.data_cache[asset_name] = data
-            
-            return data
-            
-        except Exception as e:
-            st.error(f"Error fetching data for {asset_name}: {str(e)}")
-            return pd.DataFrame()
-    
-    def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate all technical indicators using pandas only"""
+        # Fetch OHLCV data
+        ohlcv = exchange.fetch_ohlcv(symbol_ccxt, timeframe, limit=limit)
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.set_index('timestamp', inplace=True)
+        
+        return df
+    except:
+        # Fallback to yfinance
+        return fetch_yfinance_data(symbol, '1h', limit)
+
+def fetch_yfinance_data(symbol, interval='1h', period='30d'):
+    """Fetch data using yfinance"""
+    try:
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period=period, interval=interval)
+        
         if df.empty:
-            return df
+            # Try with different symbol format for forex
+            if '=X' in symbol:
+                df = yf.download(symbol, period=period, interval=interval, progress=False)
         
-        close = df['Close']
-        high = df['High']
-        low = df['Low']
-        volume = df['Volume']
+        return df
+    except Exception as e:
+        st.error(f"Error fetching {symbol}: {e}")
+        return pd.DataFrame()
+
+def fetch_asset_data(asset_symbol, asset_type, timeframe='1h'):
+    """Fetch data based on asset type"""
+    if asset_type == 'crypto':
+        return fetch_crypto_data(asset_symbol, timeframe)
+    else:
+        # For forex and commodities, use yfinance
+        period_map = {
+            '1m': '7d', '5m': '30d', '15m': '30d',
+            '30m': '60d', '1h': '60d', '4h': '180d',
+            '1d': '1y', '1wk': '2y'
+        }
+        period = period_map.get(timeframe, '30d')
+        return fetch_yfinance_data(asset_symbol, timeframe, period)
+
+# SMC Calculation Functions
+class SmartMoneyAnalyzer:
+    def __init__(self):
+        self.fvg_lookback = 5
+        self.swing_period = 3
         
-        # Moving Averages (EMA calculation)
-        df['EMA8'] = close.ewm(span=8, adjust=False).mean()
-        df['EMA21'] = close.ewm(span=21, adjust=False).mean()
-        df['EMA50'] = close.ewm(span=50, adjust=False).mean()
-        df['SMA20'] = close.rolling(window=20).mean()
+    def calculate_market_structure(self, df):
+        """Calculate market structure including BOS and CHOCH"""
+        df = df.copy()
         
-        # VWAP (Volume Weighted Average Price)
-        typical_price = (high + low + close) / 3
-        vwap_numerator = (typical_price * volume).rolling(window=20).sum()
-        vwap_denominator = volume.rolling(window=20).sum()
-        df['VWAP'] = vwap_numerator / vwap_denominator
+        # Identify swing highs and lows
+        df['Swing_High'] = False
+        df['Swing_Low'] = False
         
-        # Bollinger Bands
-        sma20 = close.rolling(window=20).mean()
-        std20 = close.rolling(window=20).std()
-        df['BB_upper'] = sma20 + (std20 * 2)
-        df['BB_middle'] = sma20
-        df['BB_lower'] = sma20 - (std20 * 2)
+        for i in range(self.swing_period, len(df)-self.swing_period):
+            # Swing High
+            if all(df['High'].iloc[i] > df['High'].iloc[i-j] for j in range(1, self.swing_period+1)) and \
+               all(df['High'].iloc[i] > df['High'].iloc[i+j] for j in range(1, self.swing_period+1)):
+                df.loc[df.index[i], 'Swing_High'] = True
+            
+            # Swing Low
+            if all(df['Low'].iloc[i] < df['Low'].iloc[i-j] for j in range(1, self.swing_period+1)) and \
+               all(df['Low'].iloc[i] < df['Low'].iloc[i+j] for j in range(1, self.swing_period+1)):
+                df.loc[df.index[i], 'Swing_Low'] = True
         
-        # RSI Calculation
-        delta = close.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        df['RSI'] = 100 - (100 / (1 + rs))
+        # Calculate Higher Highs (HH), Lower Lows (LL)
+        df['HH'] = np.nan
+        df['HL'] = np.nan
+        df['LH'] = np.nan
+        df['LL'] = np.nan
         
-        # MACD Calculation
-        exp1 = close.ewm(span=12, adjust=False).mean()
-        exp2 = close.ewm(span=26, adjust=False).mean()
-        df['MACD'] = exp1 - exp2
-        df['MACD_signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-        df['MACD_hist'] = df['MACD'] - df['MACD_signal']
+        swing_highs = df[df['Swing_High']]
+        swing_lows = df[df['Swing_Low']]
         
-        # ADX Calculation (Simplified)
-        high_low = high - low
-        high_close = (high - close.shift()).abs()
-        low_close = (low - close.shift()).abs()
-        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        atr = tr.rolling(window=14).mean()
+        # Identify market structure
+        if len(swing_highs) >= 2 and len(swing_lows) >= 2:
+            # Uptrend: Higher Highs and Higher Lows
+            df['Trend'] = 'Neutral'
+            last_idx = df.index[-1]
+            
+            # Check last two swing highs and lows
+            last_swing_highs = swing_highs.index[-2:]
+            last_swing_lows = swing_lows.index[-2:]
+            
+            if len(last_swing_highs) == 2 and len(last_swing_lows) == 2:
+                if (df.loc[last_swing_highs[-1], 'High'] > df.loc[last_swing_highs[-2], 'High'] and
+                    df.loc[last_swing_lows[-1], 'Low'] > df.loc[last_swing_lows[-2], 'Low']):
+                    df.loc[last_idx, 'Trend'] = 'Uptrend'
+                elif (df.loc[last_swing_highs[-1], 'High'] < df.loc[last_swing_highs[-2], 'High'] and
+                      df.loc[last_swing_lows[-1], 'Low'] < df.loc[last_swing_lows[-2], 'Low']):
+                    df.loc[last_idx, 'Trend'] = 'Downtrend'
         
-        plus_dm = high.diff()
-        minus_dm = low.diff()
-        plus_dm[plus_dm < 0] = 0
-        minus_dm[minus_dm > 0] = 0
-        
-        plus_di = 100 * (plus_dm.ewm(alpha=1/14).mean() / atr)
-        minus_di = 100 * (abs(minus_dm.ewm(alpha=1/14).mean()) / atr)
-        dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
-        df['ADX'] = dx.rolling(window=14).mean()
-        
-        # ATR for stop loss calculation
-        df['ATR'] = atr
-        
-        # Volume indicators
-        df['Volume_SMA20'] = volume.rolling(window=20).mean()
-        df['Volume_Ratio'] = volume / df['Volume_SMA20']
-        
-        # Support and Resistance
-        df['Support'] = low.rolling(window=20).min()
-        df['Resistance'] = high.rolling(window=20).max()
-        
-        # Price position indicators
-        df['Price_VWAP_Ratio'] = close / df['VWAP']
-        bb_range = df['BB_upper'] - df['BB_lower']
-        df['Price_BB_Position'] = (close - df['BB_lower']) / bb_range.replace(0, np.nan)
-        
-        # Trend indicators
-        df['EMA_Trend'] = np.where(
-            (df['EMA8'] > df['EMA21']) & (df['EMA21'] > df['EMA50']), 1,
-            np.where(
-                (df['EMA8'] < df['EMA21']) & (df['EMA21'] < df['EMA50']), -1, 0
-            )
-        )
+        # Detect Break of Structure (BOS)
+        df['BOS'] = False
+        df['CHOCH'] = False
         
         return df
     
-    def get_latest_data(self, asset_name: str) -> Dict:
-        """Get latest data point with all indicators"""
-        if asset_name not in self.data_cache:
-            self.fetch_data(asset_name)
+    def calculate_fair_value_gaps(self, df):
+        """Calculate Fair Value Gaps"""
+        df = df.copy()
         
-        if asset_name in self.data_cache and not self.data_cache[asset_name].empty:
-            latest = self.data_cache[asset_name].iloc[-1].to_dict()
-            latest['asset'] = asset_name
-            latest['symbol'] = self.ASSET_SYMBOLS.get(asset_name, asset_name)
-            latest['timestamp'] = datetime.now()
-            return latest
+        df['FVG_Bullish'] = np.nan
+        df['FVG_Bearish'] = np.nan
+        df['FVG_Width'] = np.nan
         
-        return {}
-
-
-class SignalGenerator:
-    """Generates trading signals based on strategy rules"""
+        for i in range(self.fvg_lookback, len(df)-1):
+            current = df.iloc[i]
+            next_candle = df.iloc[i+1]
+            
+            # Bullish FVG (Price gapped up)
+            if current['High'] < next_candle['Low']:
+                df.loc[df.index[i], 'FVG_Bullish'] = current['High']
+                df.loc[df.index[i], 'FVG_Width'] = next_candle['Low'] - current['High']
+            
+            # Bearish FVG (Price gapped down)
+            elif current['Low'] > next_candle['High']:
+                df.loc[df.index[i], 'FVG_Bearish'] = current['Low']
+                df.loc[df.index[i], 'FVG_Width'] = current['Low'] - next_candle['High']
+        
+        return df
     
-    def __init__(self):
-        self.strategies = self._initialize_strategies()
+    def identify_orderblocks(self, df):
+        """Identify Order Blocks"""
+        df = df.copy()
         
-    def _initialize_strategies(self) -> Dict:
-        """Initialize all trading strategies with weights"""
-        return {
-            'trend_following': [
-                {
-                    'name': 'EMA_VWAP_Confluence',
-                    'type': 'BUY',
-                    'weight': 3,
-                    'conditions': [
-                        lambda d: d.get('Close', 0) > d.get('EMA8', 0),
-                        lambda d: d.get('EMA8', 0) > d.get('EMA21', 0),
-                        lambda d: d.get('EMA21', 0) > d.get('EMA50', 0),
-                        lambda d: d.get('Close', 0) > d.get('VWAP', 0),
-                        lambda d: d.get('ADX', 0) > 25,
-                        lambda d: d.get('Volume_Ratio', 0) > 1.2
-                    ]
-                },
-                {
-                    'name': 'MACD_Momentum',
-                    'type': 'BUY',
-                    'weight': 2,
-                    'conditions': [
-                        lambda d: d.get('MACD', 0) > d.get('MACD_signal', 0),
-                        lambda d: d.get('EMA8', 0) > d.get('EMA21', 0),
-                        lambda d: d.get('Close', 0) > d.get('VWAP', 0),
-                        lambda d: d.get('Volume_Ratio', 0) > 1.0
-                    ]
+        df['OB_Bullish'] = np.nan
+        df['OB_Bearish'] = np.nan
+        
+        for i in range(2, len(df)-2):
+            current = df.iloc[i]
+            prev = df.iloc[i-1]
+            next_candle = df.iloc[i+1]
+            
+            # Bullish Order Block
+            candle_size = abs(current['Close'] - current['Open'])
+            body_ratio = candle_size / (current['High'] - current['Low']) if (current['High'] - current['Low']) > 0 else 0
+            
+            if (current['Close'] > current['Open'] and  # Bullish candle
+                candle_size > 0 and
+                body_ratio > 0.6 and  # Strong body
+                next_candle['Low'] > current['Low']):  # Next candle doesn't break low
+                df.loc[df.index[i], 'OB_Bullish'] = current['Low']
+            
+            # Bearish Order Block
+            elif (current['Close'] < current['Open'] and  # Bearish candle
+                  candle_size > 0 and
+                  body_ratio > 0.6 and  # Strong body
+                  next_candle['High'] < current['High']):  # Next candle doesn't break high
+                df.loc[df.index[i], 'OB_Bearish'] = current['High']
+        
+        return df
+    
+    def identify_liquidity_levels(self, df, period=20):
+        """Identify liquidity levels"""
+        df = df.copy()
+        
+        # Recent highs and lows
+        df['Recent_High'] = df['High'].rolling(window=period).max()
+        df['Recent_Low'] = df['Low'].rolling(window=period).min()
+        
+        # Equal highs/lows (liquidity pools)
+        df['Equal_High'] = df['High'] == df['High'].rolling(window=period).max()
+        df['Equal_Low'] = df['Low'] == df['Low'].rolling(window=period).min()
+        
+        return df
+    
+    def identify_supply_demand_zones(self, df, threshold=1.5):
+        """Identify Supply and Demand Zones"""
+        zones = []
+        
+        # Calculate percentage changes
+        df['pct_change'] = df['Close'].pct_change() * 100
+        
+        # Find significant moves
+        significant_moves = df[abs(df['pct_change']) > threshold]
+        
+        for idx in significant_moves.index:
+            if df.loc[idx, 'pct_change'] > threshold:
+                # Demand Zone (after strong bullish move)
+                zone = {
+                    'type': 'Demand',
+                    'start': idx,
+                    'end': df.index[-1],
+                    'high': df.loc[idx, 'High'],
+                    'low': df.loc[idx, 'Low'],
+                    'strength': df.loc[idx, 'pct_change']
                 }
-            ],
-            'mean_reversion': [
-                {
-                    'name': 'RSI_Oversold',
-                    'type': 'BUY',
-                    'weight': 2,
-                    'conditions': [
-                        lambda d: 25 < d.get('RSI', 50) < 35,
-                        lambda d: d.get('Close', 0) > d.get('Support', 0),
-                        lambda d: d.get('Volume_Ratio', 0) > 0.8
-                    ]
-                },
-                {
-                    'name': 'Bollinger_Reversion',
-                    'type': 'BUY',
-                    'weight': 3,
-                    'conditions': [
-                        lambda d: d.get('Close', 0) <= d.get('BB_lower', float('inf')) * 1.01,
-                        lambda d: d.get('RSI', 50) < 40,
-                        lambda d: d.get('Volume_Ratio', 0) > 1.0
-                    ]
+                zones.append(zone)
+            elif df.loc[idx, 'pct_change'] < -threshold:
+                # Supply Zone (after strong bearish move)
+                zone = {
+                    'type': 'Supply',
+                    'start': idx,
+                    'end': df.index[-1],
+                    'high': df.loc[idx, 'High'],
+                    'low': df.loc[idx, 'Low'],
+                    'strength': abs(df.loc[idx, 'pct_change'])
                 }
-            ],
-            'breakout': [
-                {
-                    'name': 'Volume_Breakout_BUY',
+                zones.append(zone)
+        
+        return zones
+    
+    def calculate_mitigation_blocks(self, df):
+        """Calculate Mitigation Blocks (failed order blocks)"""
+        df = df.copy()
+        
+        df['Mitigation_Bullish'] = np.nan
+        df['Mitigation_Bearish'] = np.nan
+        
+        for i in range(5, len(df)):
+            # Check for broken bullish OB that gets reclaimed
+            for j in range(max(0, i-10), i):
+                if not pd.isna(df.loc[df.index[j], 'OB_Bullish']):
+                    if df.loc[df.index[i], 'Low'] < df.loc[df.index[j], 'OB_Bullish'] and \
+                       df.loc[df.index[i], 'Close'] > df.loc[df.index[j], 'OB_Bullish']:
+                        df.loc[df.index[i], 'Mitigation_Bullish'] = df.loc[df.index[j], 'OB_Bullish']
+            
+            # Check for broken bearish OB that gets reclaimed
+            for j in range(max(0, i-10), i):
+                if not pd.isna(df.loc[df.index[j], 'OB_Bearish']):
+                    if df.loc[df.index[i], 'High'] > df.loc[df.index[j], 'OB_Bearish'] and \
+                       df.loc[df.index[i], 'Close'] < df.loc[df.index[j], 'OB_Bearish']:
+                        df.loc[df.index[i], 'Mitigation_Bearish'] = df.loc[df.index[j], 'OB_Bearish']
+        
+        return df
+    
+    def generate_signals(self, df, zones):
+        """Generate trading signals based on SMC confluence"""
+        signals = []
+        
+        if len(df) < 10:
+            return signals
+        
+        latest = df.iloc[-1]
+        prev = df.iloc[-2]
+        
+        # Check FVG signals
+        if not pd.isna(latest.get('FVG_Bullish', np.nan)):
+            if latest['Low'] <= latest['FVG_Bullish'] <= latest['High']:
+                signals.append({
                     'type': 'BUY',
-                    'weight': 4,
-                    'conditions': [
-                        lambda d: d.get('Volume_Ratio', 0) > 1.8,
-                        lambda d: d.get('Close', 0) > d.get('Resistance', 0),
-                        lambda d: d.get('RSI', 50) < 70,
-                        lambda d: d.get('ADX', 0) > 20
-                    ]
-                },
-                {
-                    'name': 'Support_Resistance_Breakout_SELL',
-                    'type': 'SELL',
-                    'weight': 4,
-                    'conditions': [
-                        lambda d: d.get('Volume_Ratio', 0) > 1.8,
-                        lambda d: d.get('Close', 0) < d.get('Support', 0),
-                        lambda d: d.get('RSI', 50) > 30,
-                        lambda d: d.get('ADX', 0) > 20
-                    ]
-                }
-            ],
-            'bearish': [
-                {
-                    'name': 'EMA_VWAP_Downtrend',
-                    'type': 'SELL',
-                    'weight': 3,
-                    'conditions': [
-                        lambda d: d.get('Close', 0) < d.get('EMA8', 0),
-                        lambda d: d.get('EMA8', 0) < d.get('EMA21', 0),
-                        lambda d: d.get('EMA21', 0) < d.get('EMA50', 0),
-                        lambda d: d.get('Close', 0) < d.get('VWAP', 0),
-                        lambda d: d.get('ADX', 0) > 25,
-                        lambda d: d.get('Volume_Ratio', 0) > 1.2
-                    ]
-                },
-                {
-                    'name': 'RSI_Overbought',
-                    'type': 'SELL',
-                    'weight': 2,
-                    'conditions': [
-                        lambda d: 65 < d.get('RSI', 50) < 75,
-                        lambda d: d.get('Close', 0) < d.get('Resistance', 0),
-                        lambda d: d.get('Volume_Ratio', 0) > 0.8
-                    ]
-                },
-                {
-                    'name': 'Bollinger_Rejection',
-                    'type': 'SELL',
-                    'weight': 3,
-                    'conditions': [
-                        lambda d: d.get('Close', 0) >= d.get('BB_upper', 0) * 0.99,
-                        lambda d: d.get('RSI', 50) > 60,
-                        lambda d: d.get('Volume_Ratio', 0) > 1.0
-                    ]
-                }
-            ]
-        }
-    
-    def generate_signal(self, data: Dict) -> Dict:
-        """Generate trading signal based on all strategies"""
-        if not data or 'Close' not in data:
-            return {'signal_type': 'HOLD', 'signal_score': 0, 'triggered_strategies': []}
-        
-        buy_score = 0
-        sell_score = 0
-        triggered_strategies = []
-        
-        # Check all strategies
-        for category, strategies in self.strategies.items():
-            for strategy in strategies:
-                try:
-                    # Check if all conditions are met
-                    conditions_met = all(condition(data) for condition in strategy['conditions'])
-                    
-                    if conditions_met:
-                        weight = strategy['weight']
-                        strategy_name = f"{strategy['name']}"
-                        
-                        if strategy['type'] == 'BUY':
-                            buy_score += weight
-                            triggered_strategies.append(f"{strategy_name}(+{weight})")
-                        elif strategy['type'] == 'SELL':
-                            sell_score += weight
-                            triggered_strategies.append(f"{strategy_name}(+{weight})")
-                except Exception as e:
-                    continue
-        
-        # Determine final signal
-        signal_type = 'HOLD'
-        signal_score = 0
-        
-        # Strong buy if score >= 6 and significantly higher than sell
-        if buy_score >= 6 and buy_score > sell_score + 2:
-            signal_type = 'STRONG_BUY'
-            signal_score = buy_score
-        elif buy_score >= 4 and buy_score > sell_score:
-            signal_type = 'BUY'
-            signal_score = buy_score
-        elif sell_score >= 6 and sell_score > buy_score + 2:
-            signal_type = 'STRONG_SELL'
-            signal_score = sell_score
-        elif sell_score >= 4 and sell_score > buy_score:
-            signal_type = 'SELL'
-            signal_score = sell_score
-        elif buy_score >= 3 and sell_score >= 3:
-            signal_type = 'CONFLICT'
-            signal_score = max(buy_score, sell_score)
-        
-        return {
-            'signal_type': signal_type,
-            'signal_score': signal_score,
-            'buy_score': buy_score,
-            'sell_score': sell_score,
-            'triggered_strategies': triggered_strategies[:5],  # Limit to top 5
-            'timestamp': datetime.now(),
-            'asset': data.get('asset', ''),
-            'price': data.get('Close', 0)
-        }
-
-
-class RiskManager:
-    """Manages risk, position sizing, and stop/target calculations"""
-    
-    def __init__(self, capital: float = 10000, max_risk_per_trade: float = 1.0):
-        self.capital = capital
-        self.max_risk_per_trade = max_risk_per_trade
-        
-    def calculate_position_size(self, entry_price: float, stop_loss: float, asset_type: str = 'crypto') -> float:
-        """Calculate position size based on risk and asset type"""
-        risk_per_share = abs(entry_price - stop_loss)
-        
-        if risk_per_share <= 0:
-            return 0
-        
-        # Adjust max risk based on asset type
-        max_risk_pct = self.max_risk_per_trade
-        if asset_type == 'commodity':
-            max_risk_pct = min(max_risk_pct, 0.5)  # Lower risk for commodities
-        
-        max_risk_amount = self.capital * (max_risk_pct / 100)
-        position_size = max_risk_amount / risk_per_share
-        
-        # Apply position limits based on asset
-        if asset_type == 'crypto':
-            min_position_value = 50  # $50 minimum for crypto
-        else:
-            min_position_value = 100  # $100 minimum for commodities
-        
-        min_shares = min_position_value / entry_price if entry_price > 0 else 0
-        
-        return max(min_shares, position_size)
-    
-    def calculate_stop_target(self, entry_price: float, signal_type: str, 
-                             atr: float, support: float, resistance: float,
-                             asset_volatility: float = 1.0) -> Tuple[float, float, float]:
-        """Calculate stop loss and take profit with volatility adjustment"""
-        
-        # Adjust ATR based on asset volatility
-        adjusted_atr = atr * asset_volatility
-        atr_stop = 1.5 * adjusted_atr
-        
-        if signal_type in ['BUY', 'STRONG_BUY']:
-            # Stop loss: support or ATR-based
-            stop_loss = min(support, entry_price - atr_stop) if support > 0 else entry_price - atr_stop
-            
-            # Take profit: 2.5:1 reward ratio minimum
-            min_reward = 2.5 * abs(entry_price - stop_loss)
-            profit_target = max(resistance, entry_price + min_reward) if resistance > 0 else entry_price + min_reward
-            
-        else:  # SELL or STRONG_SELL
-            stop_loss = max(resistance, entry_price + atr_stop) if resistance > 0 else entry_price + atr_stop
-            
-            min_reward = 2.5 * abs(entry_price - stop_loss)
-            profit_target = min(support, entry_price - min_reward) if support > 0 else entry_price - min_reward
-        
-        # Calculate actual risk/reward ratio
-        risk = abs(entry_price - stop_loss)
-        reward = abs(profit_target - entry_price)
-        
-        if risk > 0:
-            actual_rr = reward / risk
-        else:
-            actual_rr = 0
-        
-        # Ensure minimum R:R
-        if actual_rr < 2.5:
-            if signal_type in ['BUY', 'STRONG_BUY']:
-                profit_target = entry_price + (2.5 * risk)
-            else:
-                profit_target = entry_price - (2.5 * risk)
-            actual_rr = 2.5
-        
-        return stop_loss, profit_target, actual_rr
-
-
-class TradingBot:
-    """Main trading bot orchestrator"""
-    
-    def __init__(self, config: Dict):
-        self.config = config
-        self.data_handler = DataHandler(
-            timeframe=config.get('timeframe', '15m'),
-            lookback_days=config.get('lookback_days', 30)
-        )
-        self.signal_generator = SignalGenerator()
-        self.risk_manager = RiskManager(
-            capital=config.get('capital', 10000),
-            max_risk_per_trade=config.get('max_risk_per_trade', 1.0)
-        )
-        
-        self.assets = config.get('assets', ['BTC', 'ETH', 'USOIL', 'GOLD', 'XRP', 'SOLANA'])
-        self.running = False
-        self.signals = {}
-        self.trades = []
-        
-        # Load existing trades if any
-        self.load_trades()
-    
-    def load_trades(self):
-        """Load trades from file"""
-        try:
-            if os.path.exists('trades.json'):
-                with open('trades.json', 'r') as f:
-                    self.trades = json.load(f)
-        except:
-            self.trades = []
-    
-    def save_trades(self):
-        """Save trades to file"""
-        try:
-            with open('trades.json', 'w') as f:
-                json.dump(self.trades, f, default=str)
-        except:
-            pass
-    
-    def analyze_asset(self, asset_name: str) -> Optional[Dict]:
-        """Run analysis for a single asset"""
-        try:
-            # Fetch latest data
-            data = self.data_handler.get_latest_data(asset_name)
-            
-            if not data or 'Close' not in data:
-                return None
-            
-            # Generate signal
-            signal = self.signal_generator.generate_signal(data)
-            
-            # Determine asset type for risk management
-            asset_type = 'crypto' if asset_name in ['BTC', 'ETH', 'XRP', 'SOLANA'] else 'commodity'
-            
-            # Calculate volatility multiplier
-            volatility_multiplier = 1.5 if asset_type == 'crypto' else 1.0
-            
-            # Calculate entry, stop, and target if there's a signal
-            if signal['signal_type'] != 'HOLD':
-                entry_price = data['Close']
-                stop_loss, take_profit, rr_ratio = self.risk_manager.calculate_stop_target(
-                    entry_price=entry_price,
-                    signal_type=signal['signal_type'],
-                    atr=data.get('ATR', entry_price * 0.02),
-                    support=data.get('Support', entry_price * 0.95),
-                    resistance=data.get('Resistance', entry_price * 1.05),
-                    asset_volatility=volatility_multiplier
-                )
-                
-                # Calculate position size
-                position_size = self.risk_manager.calculate_position_size(
-                    entry_price=entry_price,
-                    stop_loss=stop_loss,
-                    asset_type=asset_type
-                )
-                
-                signal.update({
-                    'entry_price': entry_price,
-                    'stop_loss': stop_loss,
-                    'take_profit': take_profit,
-                    'position_size': position_size,
-                    'risk_reward': rr_ratio,
-                    'asset_type': asset_type,
-                    'indicators': {
-                        'RSI': data.get('RSI', 0),
-                        'MACD': data.get('MACD', 0),
-                        'ADX': data.get('ADX', 0),
-                        'Volume_Ratio': data.get('Volume_Ratio', 0),
-                        'BB_Position': data.get('Price_BB_Position', 0.5)
-                    }
+                    'concept': 'FVG Fill',
+                    'price': latest['FVG_Bullish'],
+                    'confidence': 'Medium',
+                    'description': 'Price filling bullish Fair Value Gap'
                 })
-            
-            self.signals[asset_name] = signal
-            return signal
-            
-        except Exception as e:
-            st.error(f"Error analyzing {asset_name}: {str(e)}")
-            return None
-    
-    def execute_trade(self, asset: str, signal: Dict, action: str = 'paper'):
-        """Execute a trade (paper or live)"""
-        if signal['signal_type'] in ['HOLD', 'CONFLICT']:
-            return None
         
-        trade = {
-            'id': f"{asset}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-            'asset': asset,
-            'timestamp': datetime.now().isoformat(),
-            'signal_type': signal['signal_type'],
-            'entry_price': signal['entry_price'],
-            'stop_loss': signal['stop_loss'],
-            'take_profit': signal['take_profit'],
-            'position_size': signal['position_size'],
-            'risk_reward': signal['risk_reward'],
-            'signal_score': signal['signal_score'],
-            'status': 'OPEN',
-            'action': action,
-            'pnl': 0,
-            'pnl_percent': 0
-        }
+        if not pd.isna(latest.get('FVG_Bearish', np.nan)):
+            if latest['Low'] <= latest['FVG_Bearish'] <= latest['High']:
+                signals.append({
+                    'type': 'SELL',
+                    'concept': 'FVG Fill',
+                    'price': latest['FVG_Bearish'],
+                    'confidence': 'Medium',
+                    'description': 'Price filling bearish Fair Value Gap'
+                })
         
-        self.trades.append(trade)
-        self.save_trades()
+        # Check Order Block signals
+        if not pd.isna(latest.get('OB_Bullish', np.nan)):
+            if latest['Low'] <= latest['OB_Bullish'] <= latest['High']:
+                signals.append({
+                    'type': 'BUY',
+                    'concept': 'Order Block',
+                    'price': latest['OB_Bullish'],
+                    'confidence': 'High',
+                    'description': 'Price at bullish Order Block'
+                })
         
-        st.success(f"Executed {action} trade for {asset}: {signal['signal_type']} @ ${signal['entry_price']:.2f}")
+        if not pd.isna(latest.get('OB_Bearish', np.nan)):
+            if latest['Low'] <= latest['OB_Bearish'] <= latest['High']:
+                signals.append({
+                    'type': 'SELL',
+                    'concept': 'Order Block',
+                    'price': latest['OB_Bearish'],
+                    'confidence': 'High',
+                    'description': 'Price at bearish Order Block'
+                })
         
-        return trade
-    
-    def update_trades(self, current_prices: Dict):
-        """Update open trades with current prices"""
-        for trade in self.trades:
-            if trade['status'] == 'OPEN' and trade['asset'] in current_prices:
-                current_price = current_prices[trade['asset']]
-                entry_price = trade['entry_price']
-                position_size = trade['position_size']
-                
-                # Calculate P&L
-                if trade['signal_type'] in ['BUY', 'STRONG_BUY']:
-                    pnl = (current_price - entry_price) * position_size
-                else:  # SELL or STRONG_SELL
-                    pnl = (entry_price - current_price) * position_size
-                
-                pnl_percent = (pnl / (entry_price * position_size)) * 100 if entry_price * position_size > 0 else 0
-                
-                trade['current_price'] = current_price
-                trade['pnl'] = pnl
-                trade['pnl_percent'] = pnl_percent
-                
-                # Check stop loss and take profit
-                stop_loss = trade['stop_loss']
-                take_profit = trade['take_profit']
-                
-                if (trade['signal_type'] in ['BUY', 'STRONG_BUY'] and current_price <= stop_loss) or \
-                   (trade['signal_type'] in ['SELL', 'STRONG_SELL'] and current_price >= stop_loss):
-                    trade['status'] = 'CLOSED'
-                    trade['exit_reason'] = 'STOP_LOSS'
-                    trade['exit_price'] = stop_loss
-                elif (trade['signal_type'] in ['BUY', 'STRONG_BUY'] and current_price >= take_profit) or \
-                     (trade['signal_type'] in ['SELL', 'STRONG_SELL'] and current_price <= take_profit):
-                    trade['status'] = 'CLOSED'
-                    trade['exit_reason'] = 'TAKE_PROFIT'
-                    trade['exit_price'] = take_profit
-        
-        self.save_trades()
-    
-    def run_analysis(self):
-        """Run analysis for all assets"""
-        self.signals = {}
-        current_prices = {}
-        
-        for asset in self.assets:
-            signal = self.analyze_asset(asset)
-            if signal and 'price' in signal:
-                current_prices[asset] = signal['price']
-        
-        # Update existing trades
-        self.update_trades(current_prices)
-        
-        return self.signals
-    
-    def get_performance_metrics(self):
-        """Calculate performance metrics"""
-        if not self.trades:
-            return {
-                'total_trades': 0,
-                'winning_trades': 0,
-                'losing_trades': 0,
-                'total_pnl': 0,
-                'win_rate': 0,
-                'avg_win': 0,
-                'avg_loss': 0,
-                'profit_factor': 0,
-                'open_trades': 0,
-                'open_pnl': 0
-            }
-        
-        closed_trades = [t for t in self.trades if t.get('status') == 'CLOSED']
-        open_trades = [t for t in self.trades if t.get('status') == 'OPEN']
-        
-        total_pnl = sum(t.get('pnl', 0) for t in closed_trades)
-        winning_trades = [t for t in closed_trades if t.get('pnl', 0) > 0]
-        losing_trades = [t for t in closed_trades if t.get('pnl', 0) <= 0]
-        
-        win_rate = len(winning_trades) / len(closed_trades) * 100 if closed_trades else 0
-        avg_win = np.mean([t.get('pnl', 0) for t in winning_trades]) if winning_trades else 0
-        avg_loss = np.mean([t.get('pnl', 0) for t in losing_trades]) if losing_trades else 0
-        
-        total_wins = sum(t.get('pnl', 0) for t in winning_trades) if winning_trades else 0
-        total_losses = abs(sum(t.get('pnl', 0) for t in losing_trades)) if losing_trades else 0
-        profit_factor = total_wins / total_losses if total_losses > 0 else float('inf')
-        
-        open_pnl = sum(t.get('pnl', 0) for t in open_trades)
-        
-        return {
-            'total_trades': len(closed_trades),
-            'winning_trades': len(winning_trades),
-            'losing_trades': len(losing_trades),
-            'total_pnl': total_pnl,
-            'open_pnl': open_pnl,
-            'win_rate': win_rate,
-            'avg_win': avg_win,
-            'avg_loss': avg_loss,
-            'profit_factor': profit_factor,
-            'open_trades': len(open_trades)
-        }
-
-
-class StreamlitApp:
-    """Streamlit application for the trading bot"""
-    
-    def __init__(self):
-        self.bot = None
-        self.last_update = None
-        
-    def initialize_bot(self, config: Dict):
-        """Initialize the trading bot"""
-        self.bot = TradingBot(config)
-        st.session_state.bot_initialized = True
-        st.session_state.config = config
-        st.success("✅ Trading bot initialized successfully!")
-    
-    def display_header(self):
-        """Display application header"""
-        col1, col2, col3 = st.columns([1, 2, 1])
-        
-        with col2:
-            st.markdown('<h1 class="main-header">📈 Multi-Asset Trading Bot</h1>', unsafe_allow_html=True)
-            st.markdown("**Real-time trading signals for Commodities & Cryptocurrencies**")
-            
-            if self.last_update:
-                st.caption(f"Last updated: {self.last_update.strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    def display_sidebar(self):
-        """Display sidebar with configuration"""
-        with st.sidebar:
-            st.title("⚙️ Configuration")
-            
-            # Trading Parameters
-            st.subheader("Trading Parameters")
-            capital = st.number_input("Capital ($)", min_value=1000, max_value=1000000, value=10000, step=1000)
-            max_risk = st.slider("Max Risk per Trade (%)", 0.1, 5.0, 1.0, 0.1)
-            
-            # Asset Selection
-            st.subheader("Assets to Trade")
-            assets = []
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.checkbox("BTC", True): assets.append("BTC")
-                if st.checkbox("ETH", True): assets.append("ETH")
-                if st.checkbox("USOIL", True): assets.append("USOIL")
-            with col2:
-                if st.checkbox("GOLD", True): assets.append("GOLD")
-                if st.checkbox("XRP", True): assets.append("XRP")
-                if st.checkbox("SOLANA", True): assets.append("SOLANA")
-            
-            # Timeframe
-            st.subheader("Analysis Timeframe")
-            timeframe = st.selectbox(
-                "Select Timeframe",
-                ["15m", "1h", "4h", "1d"],
-                index=0
-            )
-            
-            # Action Buttons
-            st.subheader("Actions")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if st.button("🚀 Initialize Bot", use_container_width=True, type="primary"):
-                    config = {
-                        'capital': capital,
-                        'max_risk_per_trade': max_risk,
-                        'assets': assets,
-                        'timeframe': timeframe,
-                        'lookback_days': 30
-                    }
-                    self.initialize_bot(config)
-            
-            with col2:
-                if st.button("🔄 Run Analysis", use_container_width=True):
-                    if 'bot_initialized' in st.session_state and st.session_state.bot_initialized:
-                        with st.spinner("Running analysis..."):
-                            self.bot.run_analysis()
-                            self.last_update = datetime.now()
-                        st.success("Analysis complete!")
-                        st.rerun()
-                    else:
-                        st.warning("Please initialize the bot first")
-            
-            # Performance Summary
-            if 'bot_initialized' in st.session_state and st.session_state.bot_initialized:
-                st.divider()
-                st.subheader("📊 Performance Summary")
-                metrics = self.bot.get_performance_metrics()
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("Total P&L", f"${metrics['total_pnl']:.2f}", 
-                             f"${metrics['open_pnl']:.2f} open")
-                    st.metric("Win Rate", f"{metrics['win_rate']:.1f}%")
-                with col2:
-                    st.metric("Total Trades", metrics['total_trades'])
-                    st.metric("Open Trades", metrics['open_trades'])
-    
-    def display_signals_dashboard(self):
-        """Display trading signals dashboard"""
-        st.header("📊 Trading Signals Dashboard")
-        
-        if not self.bot or not self.bot.signals:
-            st.info("No signals available. Click 'Run Analysis' to generate signals.")
-            return
-        
-        # Create metrics row
-        cols = st.columns(len(self.bot.signals))
-        
-        for idx, (asset, signal) in enumerate(self.bot.signals.items()):
-            with cols[idx]:
-                # Determine color and icon based on signal
-                if signal['signal_type'] in ['STRONG_BUY', 'BUY']:
-                    color = "#00C853"
-                    icon = "🟢"
-                    bg_color = "#E8F5E9"
-                elif signal['signal_type'] in ['STRONG_SELL', 'SELL']:
-                    color = "#FF5252"
-                    icon = "🔴"
-                    bg_color = "#FFEBEE"
+        # Check Supply/Demand Zones
+        current_price = latest['Close']
+        for zone in zones[-5:]:  # Check last 5 zones
+            if zone['low'] <= current_price <= zone['high']:
+                if zone['type'] == 'Demand':
+                    signals.append({
+                        'type': 'BUY',
+                        'concept': 'Demand Zone',
+                        'price': current_price,
+                        'confidence': 'High',
+                        'description': f'Price in Demand Zone (Strength: {zone["strength"]:.1f}%)'
+                    })
                 else:
-                    color = "#FFC107"
-                    icon = "🟡"
-                    bg_color = "#FFF8E1"
-                
-                # Create metric card
-                st.markdown(f"""
-                <div style='border: 2px solid {color}; background-color: {bg_color}; padding: 15px; border-radius: 10px; text-align: center;'>
-                    <h3>{icon} {asset}</h3>
-                    <h4 style='color: {color};'>{signal['signal_type']}</h4>
-                    <p>Score: <b>{signal['signal_score']}</b></p>
-                    <p>Price: <b>${signal.get('price', 0):.2f}</b></p>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # Show action buttons
-                if signal['signal_type'] != 'HOLD':
-                    if st.button(f"📈 Paper Trade", key=f"trade_{asset}", use_container_width=True):
-                        trade = self.bot.execute_trade(asset, signal, 'paper')
-                        if trade:
-                            st.rerun()
+                    signals.append({
+                        'type': 'SELL',
+                        'concept': 'Supply Zone',
+                        'price': current_price,
+                        'confidence': 'High',
+                        'description': f'Price in Supply Zone (Strength: {zone["strength"]:.1f}%)'
+                    })
         
-        # Detailed signals table
-        st.subheader("Detailed Signal Analysis")
-        
-        signals_data = []
-        for asset, signal in self.bot.signals.items():
-            signals_data.append({
-                'Asset': asset,
-                'Signal': signal['signal_type'],
-                'Score': signal['signal_score'],
-                'Price': f"${signal.get('price', 0):.2f}",
-                'Buy Score': signal['buy_score'],
-                'Sell Score': signal['sell_score'],
-                'Strategies': ', '.join(signal['triggered_strategies'][:3]) if signal['triggered_strategies'] else 'None',
-                'RSI': f"{signal.get('indicators', {}).get('RSI', 0):.1f}",
-                'Volume Ratio': f"{signal.get('indicators', {}).get('Volume_Ratio', 0):.2f}"
+        # Liquidity grab signals
+        if latest['High'] > latest['Recent_High'] * 1.002:  # 0.2% above recent high
+            signals.append({
+                'type': 'SELL',
+                'concept': 'Liquidity Grab',
+                'price': latest['Recent_High'],
+                'confidence': 'Medium',
+                'description': 'Likely liquidity grab above recent high'
             })
         
-        if signals_data:
-            df_signals = pd.DataFrame(signals_data)
-            st.dataframe(df_signals, use_container_width=True, hide_index=True)
-    
-    def display_charts(self):
-        """Display price charts for selected assets"""
-        st.header("📈 Price Charts")
+        if latest['Low'] < latest['Recent_Low'] * 0.998:  # 0.2% below recent low
+            signals.append({
+                'type': 'BUY',
+                'concept': 'Liquidity Grab',
+                'price': latest['Recent_Low'],
+                'confidence': 'Medium',
+                'description': 'Likely liquidity grab below recent low'
+            })
         
-        if not self.bot:
-            st.info("Initialize the bot first to view charts.")
-            return
-        
-        # Let user select asset to chart
-        selected_asset = st.selectbox("Select Asset to Chart", self.bot.assets)
-        
-        if selected_asset and selected_asset in self.bot.data_handler.data_cache:
-            df = self.bot.data_handler.data_cache[selected_asset]
-            
-            if not df.empty:
-                # Create candlestick chart
-                fig = make_subplots(
-                    rows=3, cols=1,
-                    shared_xaxes=True,
-                    vertical_spacing=0.05,
-                    row_heights=[0.6, 0.2, 0.2],
-                    subplot_titles=(f'{selected_asset} Price', 'RSI', 'Volume')
-                )
-                
-                # Candlestick
-                fig.add_trace(
-                    go.Candlestick(
-                        x=df.index,
-                        open=df['Open'],
-                        high=df['High'],
-                        low=df['Low'],
-                        close=df['Close'],
-                        name='Price'
-                    ),
-                    row=1, col=1
-                )
-                
-                # Add EMAs
-                for ema_period in [8, 21, 50]:
-                    if f'EMA{ema_period}' in df.columns:
-                        fig.add_trace(
-                            go.Scatter(
-                                x=df.index,
-                                y=df[f'EMA{ema_period}'],
-                                name=f'EMA{ema_period}',
-                                line=dict(width=1)
-                            ),
-                            row=1, col=1
-                        )
-                
-                # Add Bollinger Bands
-                if 'BB_upper' in df.columns and 'BB_lower' in df.columns:
-                    fig.add_trace(
-                        go.Scatter(
-                            x=df.index,
-                            y=df['BB_upper'],
-                            name='BB Upper',
-                            line=dict(width=1, color='gray', dash='dash'),
-                            showlegend=False
-                        ),
-                        row=1, col=1
-                    )
-                    fig.add_trace(
-                        go.Scatter(
-                            x=df.index,
-                            y=df['BB_lower'],
-                            name='BB Lower',
-                            line=dict(width=1, color='gray', dash='dash'),
-                            fill='tonexty',
-                            fillcolor='rgba(128, 128, 128, 0.1)',
-                            showlegend=False
-                        ),
-                        row=1, col=1
-                    )
-                
-                # RSI
-                if 'RSI' in df.columns:
-                    fig.add_trace(
-                        go.Scatter(
-                            x=df.index,
-                            y=df['RSI'],
-                            name='RSI',
-                            line=dict(color='purple', width=1)
-                        ),
-                        row=2, col=1
-                    )
-                    # Add RSI levels
-                    fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-                    fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-                    fig.add_hline(y=50, line_dash="dot", line_color="gray", row=2, col=1)
-                
-                # Volume
-                colors = ['red' if row['Close'] < row['Open'] else 'green' 
-                         for _, row in df.iterrows()]
-                
-                fig.add_trace(
-                    go.Bar(
-                        x=df.index,
-                        y=df['Volume'],
-                        name='Volume',
-                        marker_color=colors,
-                        showlegend=False
-                    ),
-                    row=3, col=1
-                )
-                
-                # Update layout
-                fig.update_layout(
-                    height=800,
-                    showlegend=True,
-                    xaxis_rangeslider_visible=False,
-                    template='plotly_white'
-                )
-                
-                fig.update_xaxes(title_text="Date", row=3, col=1)
-                fig.update_yaxes(title_text="Price", row=1, col=1)
-                fig.update_yaxes(title_text="RSI", row=2, col=1, range=[0, 100])
-                fig.update_yaxes(title_text="Volume", row=3, col=1)
-                
-                st.plotly_chart(fig, use_container_width=True)
-    
-    def display_trades(self):
-        """Display active and historical trades"""
-        st.header("💼 Trade Management")
-        
-        if not self.bot or not self.bot.trades:
-            st.info("No trades yet. Execute paper trades from the dashboard.")
-            return
-        
-        # Tabs for open and closed trades
-        tab1, tab2 = st.tabs(["📊 Open Trades", "📋 Trade History"])
-        
-        with tab1:
-            open_trades = [t for t in self.bot.trades if t.get('status') == 'OPEN']
-            
-            if open_trades:
-                # Create DataFrame for display
-                trades_data = []
-                for trade in open_trades:
-                    current_price = trade.get('current_price', trade['entry_price'])
-                    pnl = trade.get('pnl', 0)
-                    pnl_color = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
-                    
-                    trades_data.append({
-                        'ID': trade['id'][-8:],
-                        'Asset': trade['asset'],
-                        'Type': trade['signal_type'],
-                        'Entry': f"${trade['entry_price']:.2f}",
-                        'Current': f"${current_price:.2f}",
-                        'Stop': f"${trade['stop_loss']:.2f}",
-                        'Target': f"${trade['take_profit']:.2f}",
-                        'Size': f"{trade['position_size']:.4f}",
-                        'P&L': f"{pnl_color} ${pnl:.2f}",
-                        'P&L %': f"{trade.get('pnl_percent', 0):.2f}%",
-                        'R:R': f"{trade['risk_reward']:.2f}:1"
-                    })
-                
-                df_trades = pd.DataFrame(trades_data)
-                st.dataframe(df_trades, use_container_width=True, hide_index=True)
-                
-                # Close trade button
-                st.subheader("Close Trade")
-                trade_ids = [t['id'] for t in open_trades]
-                selected_trade = st.selectbox("Select Trade to Close", trade_ids)
-                
-                if st.button("Close Selected Trade", type="primary"):
-                    for trade in self.bot.trades:
-                        if trade['id'] == selected_trade:
-                            trade['status'] = 'CLOSED'
-                            trade['exit_reason'] = 'MANUAL'
-                            trade['exit_price'] = trade.get('current_price', trade['entry_price'])
-                            self.bot.save_trades()
-                            st.success(f"Trade {selected_trade[-8:]} closed manually")
-                            st.rerun()
-            else:
-                st.info("No open trades")
-        
-        with tab2:
-            closed_trades = [t for t in self.bot.trades if t.get('status') == 'CLOSED']
-            
-            if closed_trades:
-                # Create DataFrame for display
-                trades_data = []
-                for trade in closed_trades[-20:]:  # Show last 20 trades
-                    pnl = trade.get('pnl', 0)
-                    pnl_color = "🟢" if pnl > 0 else "🔴"
-                    
-                    trades_data.append({
-                        'ID': trade['id'][-8:],
-                        'Asset': trade['asset'],
-                        'Type': trade['signal_type'],
-                        'Entry': f"${trade['entry_price']:.2f}",
-                        'Exit': f"${trade.get('exit_price', 0):.2f}",
-                        'P&L': f"{pnl_color} ${pnl:.2f}",
-                        'P&L %': f"{trade.get('pnl_percent', 0):.2f}%",
-                        'Result': 'WIN' if pnl > 0 else 'LOSS',
-                        'Reason': trade.get('exit_reason', 'N/A')
-                    })
-                
-                df_closed = pd.DataFrame(trades_data)
-                st.dataframe(df_closed, use_container_width=True, hide_index=True)
-                
-                # Performance summary
-                st.subheader("Performance Summary")
-                metrics = self.bot.get_performance_metrics()
-                
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Total Trades", metrics['total_trades'])
-                with col2:
-                    st.metric("Win Rate", f"{metrics['win_rate']:.1f}%")
-                with col3:
-                    st.metric("Avg Win", f"${metrics['avg_win']:.2f}")
-                with col4:
-                    pf = metrics['profit_factor']
-                    st.metric("Profit Factor", f"{pf:.2f}" if pf != float('inf') else "∞")
-            else:
-                st.info("No closed trades yet")
-    
-    def display_asset_details(self):
-        """Display detailed analysis for each asset"""
-        st.header("🔍 Asset Details")
-        
-        if not self.bot:
-            st.info("Initialize the bot first to view asset details.")
-            return
-        
-        # Create tabs for each asset
-        tabs = st.tabs(self.bot.assets)
-        
-        for idx, asset in enumerate(self.bot.assets):
-            with tabs[idx]:
-                if asset in self.bot.signals:
-                    signal = self.bot.signals[asset]
-                    
-                    # Display signal information
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Current Price", f"${signal.get('price', 0):.2f}")
-                    with col2:
-                        st.metric("Signal", signal['signal_type'])
-                    with col3:
-                        st.metric("Signal Score", signal['signal_score'])
-                    
-                    # Display indicators
-                    st.subheader("Technical Indicators")
-                    
-                    if 'indicators' in signal:
-                        indicators = signal['indicators']
-                        
-                        col1, col2, col3, col4 = st.columns(4)
-                        with col1:
-                            rsi = indicators.get('RSI', 50)
-                            rsi_color = "green" if rsi < 30 else "red" if rsi > 70 else "orange"
-                            st.metric("RSI", f"{rsi:.1f}")
-                            st.progress(min(max(rsi / 100, 0), 1))
-                        
-                        with col2:
-                            vol_ratio = indicators.get('Volume_Ratio', 1)
-                            st.metric("Volume Ratio", f"{vol_ratio:.2f}x")
-                        
-                        with col3:
-                            adx = indicators.get('ADX', 0)
-                            st.metric("ADX", f"{adx:.1f}")
-                        
-                        with col4:
-                            bb_pos = indicators.get('BB_Position', 0.5)
-                            st.metric("BB Position", f"{bb_pos:.2f}")
-                    
-                    # Display triggered strategies
-                    if signal['triggered_strategies']:
-                        st.subheader("Triggered Strategies")
-                        for strategy in signal['triggered_strategies']:
-                            st.write(f"• {strategy}")
-                    
-                    # Display trade parameters if signal exists
-                    if signal['signal_type'] != 'HOLD':
-                        st.subheader("Trade Parameters")
-                        
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Entry Price", f"${signal.get('entry_price', 0):.2f}")
-                        with col2:
-                            st.metric("Stop Loss", f"${signal.get('stop_loss', 0):.2f}")
-                        with col3:
-                            st.metric("Take Profit", f"${signal.get('take_profit', 0):.2f}")
-                        
-                        st.metric("Risk/Reward Ratio", f"{signal.get('risk_reward', 0):.2f}:1")
-    
-    def run(self):
-        """Main Streamlit application runner"""
-        self.display_header()
-        self.display_sidebar()
-        
-        if 'bot_initialized' in st.session_state and st.session_state.bot_initialized:
-            # Display main content in tabs
-            tab1, tab2, tab3, tab4 = st.tabs([
-                "📊 Dashboard",
-                "📈 Charts",
-                "💼 Trades",
-                "🔍 Analysis"
-            ])
-            
-            with tab1:
-                self.display_signals_dashboard()
-            
-            with tab2:
-                self.display_charts()
-            
-            with tab3:
-                self.display_trades()
-            
-            with tab4:
-                self.display_asset_details()
-        else:
-            # Show welcome screen
-            st.info("👈 **Please configure the bot in the sidebar and click 'Initialize Bot' to get started.**")
-            
-            # Display features
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.subheader("📈 Multi-Asset Support")
-                st.write("""
-                • USOIL (Crude Oil)  
-                • GOLD  
-                • BTC (Bitcoin)  
-                • ETH (Ethereum)  
-                • XRP (Ripple)  
-                • SOLANA
-                """)
-            
-            with col2:
-                st.subheader("⚙️ Advanced Strategies")
-                st.write("""
-                • Trend Following  
-                • Mean Reversion  
-                • Breakout Trading  
-                • Volume Analysis  
-                • Risk Management
-                """)
-            
-            with col3:
-                st.subheader("🛡️ Risk Management")
-                st.write("""
-                • ATR-based Stop Loss  
-                • Position Sizing  
-                • 2.5:1 Minimum R:R  
-                • Max Risk per Trade  
-                • Paper Trading Mode
-                """)
-            
-            # Quick start guide
-            st.divider()
-            st.subheader("🚀 Quick Start Guide")
-            
-            steps = [
-                "1. **Set your capital** in the sidebar (start with $10,000 paper money)",
-                "2. **Select assets** you want to trade",
-                "3. **Choose timeframe** (15m recommended for day trading)",
-                "4. **Click 'Initialize Bot'**",
-                "5. **Click 'Run Analysis'** to generate signals",
-                "6. **Execute paper trades** from the dashboard",
-                "7. **Monitor performance** in the trades tab"
-            ]
-            
-            for step in steps:
-                st.write(step)
+        return signals
 
-
+# Main Application
 def main():
-    """Main function to run the Streamlit app"""
-    app = StreamlitApp()
-    app.run()
-
+    st.title("📊 SMC Multi-Asset Trading Dashboard")
+    
+    # Sidebar
+    st.sidebar.header("⚙️ Configuration")
+    
+    # Asset Selection
+    asset_category = st.sidebar.selectbox(
+        "Asset Category",
+        ["Cryptocurrencies", "Forex", "Commodities"]
+    )
+    
+    # Get assets for selected category
+    if asset_category == "Cryptocurrencies":
+        assets = ASSET_CONFIG['crypto']
+        category_key = 'crypto'
+    elif asset_category == "Forex":
+        assets = ASSET_CONFIG['forex']
+        category_key = 'forex'
+    else:
+        assets = ASSET_CONFIG['commodities']
+        category_key = 'commodities'
+    
+    # Asset selection grid
+    st.sidebar.subheader("Select Asset")
+    selected_asset = st.sidebar.selectbox(
+        "Choose Asset",
+        list(assets.keys())
+    )
+    
+    # Timeframe selection
+    timeframe = st.sidebar.selectbox(
+        "Timeframe",
+        ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1wk"],
+        index=4
+    )
+    
+    # SMC Parameters
+    st.sidebar.subheader("SMC Parameters")
+    fvg_period = st.sidebar.slider("FVG Lookback", 3, 20, 5)
+    swing_period = st.sidebar.slider("Swing Period", 2, 10, 3)
+    zone_threshold = st.sidebar.slider("Zone Threshold %", 0.5, 5.0, 1.5)
+    
+    # Display Options
+    st.sidebar.subheader("Display Options")
+    show_fvg = st.sidebar.checkbox("Show FVGs", True)
+    show_ob = st.sidebar.checkbox("Show Order Blocks", True)
+    show_zones = st.sidebar.checkbox("Show Supply/Demand Zones", True)
+    show_liquidity = st.sidebar.checkbox("Show Liquidity Levels", True)
+    
+    # Get asset configuration
+    asset_config = assets[selected_asset]
+    
+    # Fetch data
+    with st.spinner(f"Fetching {selected_asset} data..."):
+        df = fetch_asset_data(
+            asset_config['symbol'],
+            asset_config['type'],
+            timeframe
+        )
+    
+    if df.empty:
+        st.error(f"Could not fetch data for {selected_asset}")
+        return
+    
+    # Initialize analyzer
+    analyzer = SmartMoneyAnalyzer()
+    analyzer.fvg_lookback = fvg_period
+    analyzer.swing_period = swing_period
+    
+    # Calculate SMC indicators
+    with st.spinner("Calculating SMC indicators..."):
+        # Calculate all indicators
+        df = analyzer.calculate_market_structure(df)
+        df = analyzer.calculate_fair_value_gaps(df)
+        df = analyzer.identify_orderblocks(df)
+        df = analyzer.identify_liquidity_levels(df)
+        zones = analyzer.identify_supply_demand_zones(df, zone_threshold)
+        df = analyzer.calculate_mitigation_blocks(df)
+        
+        # Generate signals
+        signals = analyzer.generate_signals(df, zones)
+    
+    # Display dashboard
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        current_price = df['Close'].iloc[-1]
+        prev_price = df['Close'].iloc[-2]
+        change_pct = ((current_price - prev_price) / prev_price) * 100
+        
+        st.metric(
+            label="Current Price",
+            value=f"{current_price:,.4f}",
+            delta=f"{change_pct:.2f}%"
+        )
+    
+    with col2:
+        high_24h = df['High'].iloc[-24:].max() if len(df) >= 24 else df['High'].max()
+        low_24h = df['Low'].iloc[-24:].min() if len(df) >= 24 else df['Low'].min()
+        
+        st.metric(
+            label="24h Range",
+            value=f"{low_24h:,.4f} - {high_24h:,.4f}",
+            delta=f"{(high_24h - low_24h)/current_price*100:.1f}%"
+        )
+    
+    with col3:
+        volume = df['Volume'].iloc[-1] if 'Volume' in df.columns else 0
+        avg_volume = df['Volume'].mean() if 'Volume' in df.columns else 0
+        volume_ratio = volume / avg_volume if avg_volume > 0 else 0
+        
+        st.metric(
+            label="Volume",
+            value=f"{volume:,.0f}",
+            delta=f"{volume_ratio:.1f}x avg"
+        )
+    
+    with col4:
+        trend = df['Trend'].iloc[-1] if 'Trend' in df.columns else 'Neutral'
+        trend_color = {
+            'Uptrend': 'green',
+            'Downtrend': 'red',
+            'Neutral': 'gray'
+        }.get(trend, 'gray')
+        
+        st.metric(
+            label="Market Structure",
+            value=trend,
+            delta=""
+        )
+    
+    # Chart Section
+    st.subheader(f"{selected_asset} - SMC Analysis")
+    
+    # Create chart
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.05,
+        row_heights=[0.7, 0.3],
+        subplot_titles=(f'{selected_asset} Price Chart', 'Volume')
+    )
+    
+    # Candlestick chart
+    fig.add_trace(
+        go.Candlestick(
+            x=df.index,
+            open=df['Open'],
+            high=df['High'],
+            low=df['Low'],
+            close=df['Close'],
+            name='Price'
+        ),
+        row=1, col=1
+    )
+    
+    # Add FVGs
+    if show_fvg:
+        fvg_bullish = df[~pd.isna(df['FVG_Bullish'])]
+        fvg_bearish = df[~pd.isna(df['FVG_Bearish'])]
+        
+        for idx in fvg_bullish.index:
+            fig.add_shape(
+                type="rect",
+                x0=idx,
+                x1=df.index[-1],
+                y0=df.loc[idx, 'FVG_Bullish'],
+                y1=df.loc[idx, 'FVG_Bullish'] + df.loc[idx, 'FVG_Width'],
+                fillcolor="rgba(0,255,0,0.2)",
+                line=dict(width=0),
+                row=1, col=1
+            )
+        
+        for idx in fvg_bearish.index:
+            fig.add_shape(
+                type="rect",
+                x0=idx,
+                x1=df.index[-1],
+                y0=df.loc[idx, 'FVG_Bearish'] - df.loc[idx, 'FVG_Width'],
+                y1=df.loc[idx, 'FVG_Bearish'],
+                fillcolor="rgba(255,0,0,0.2)",
+                line=dict(width=0),
+                row=1, col=1
+            )
+    
+    # Add Order Blocks
+    if show_ob:
+        ob_bullish = df[~pd.isna(df['OB_Bullish'])]
+        ob_bearish = df[~pd.isna(df['OB_Bearish'])]
+        
+        fig.add_trace(
+            go.Scatter(
+                x=ob_bullish.index,
+                y=ob_bullish['OB_Bullish'],
+                mode='markers',
+                name='Bullish OB',
+                marker=dict(color='darkgreen', size=12, symbol='square')
+            ),
+            row=1, col=1
+        )
+        
+        fig.add_trace(
+            go.Scatter(
+                x=ob_bearish.index,
+                y=ob_bearish['OB_Bearish'],
+                mode='markers',
+                name='Bearish OB',
+                marker=dict(color='darkred', size=12, symbol='square')
+            ),
+            row=1, col=1
+        )
+    
+    # Add Supply/Demand Zones
+    if show_zones:
+        for zone in zones[-3:]:  # Show last 3 zones
+            color = 'rgba(0,255,0,0.1)' if zone['type'] == 'Demand' else 'rgba(255,0,0,0.1)'
+            line_color = 'green' if zone['type'] == 'Demand' else 'red'
+            
+            fig.add_shape(
+                type="rect",
+                x0=zone['start'],
+                x1=zone['end'],
+                y0=zone['low'],
+                y1=zone['high'],
+                fillcolor=color,
+                line=dict(color=line_color, width=1),
+                row=1, col=1
+            )
+    
+    # Add Liquidity Levels
+    if show_liquidity:
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df['Recent_High'],
+                mode='lines',
+                name='Recent High',
+                line=dict(color='orange', width=1, dash='dash')
+            ),
+            row=1, col=1
+        )
+        
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=df['Recent_Low'],
+                mode='lines',
+                name='Recent Low',
+                line=dict(color='purple', width=1, dash='dash')
+            ),
+            row=1, col=1
+        )
+    
+    # Add volume
+    if 'Volume' in df.columns:
+        colors = ['red' if df['Close'].iloc[i] < df['Open'].iloc[i] else 'green' 
+                 for i in range(len(df))]
+        
+        fig.add_trace(
+            go.Bar(
+                x=df.index,
+                y=df['Volume'],
+                name='Volume',
+                marker_color=colors
+            ),
+            row=2, col=1
+        )
+    
+    # Update layout
+    fig.update_layout(
+        height=700,
+        showlegend=True,
+        xaxis_rangeslider_visible=False,
+        template='plotly_dark'
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Signals Section
+    st.subheader("🚦 Trading Signals")
+    
+    if signals:
+        cols = st.columns(min(3, len(signals)))
+        for idx, signal in enumerate(signals):
+            with cols[idx % 3]:
+                if signal['type'] == 'BUY':
+                    st.markdown(f"""
+                    <div class="signal-bullish">
+                        <h4>📈 {signal['type']} Signal</h4>
+                        <p><strong>Concept:</strong> {signal['concept']}</p>
+                        <p><strong>Price:</strong> {signal['price']:.4f}</p>
+                        <p><strong>Confidence:</strong> {signal['confidence']}</p>
+                        <p>{signal['description']}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.markdown(f"""
+                    <div class="signal-bearish">
+                        <h4>📉 {signal['type']} Signal</h4>
+                        <p><strong>Concept:</strong> {signal['concept']}</p>
+                        <p><strong>Price:</strong> {signal['price']:.4f}</p>
+                        <p><strong>Confidence:</strong> {signal['confidence']}</p>
+                        <p>{signal['description']}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+    else:
+        st.info("No active trading signals detected.")
+    
+    # Market Structure Analysis
+    st.subheader("🏛️ Market Structure Analysis")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("### Trend Analysis")
+        trend = df['Trend'].iloc[-1] if 'Trend' in df.columns else 'Neutral'
+        if trend == 'Uptrend':
+            st.markdown('<span class="concept-badge trend-up">🔼 Uptrend</span>', unsafe_allow_html=True)
+        elif trend == 'Downtrend':
+            st.markdown('<span class="concept-badge trend-down">🔽 Downtrend</span>', unsafe_allow_html=True)
+        else:
+            st.markdown('<span class="concept-badge trend-neutral">⚪ Range</span>', unsafe_allow_html=True)
+        
+        # Structure levels
+        swing_highs = df[df['Swing_High']]
+        swing_lows = df[df['Swing_Low']]
+        
+        if len(swing_highs) > 0:
+            last_swing_high = swing_highs['High'].iloc[-1]
+            st.metric("Last Swing High", f"{last_swing_high:.4f}")
+        
+        if len(swing_lows) > 0:
+            last_swing_low = swing_lows['Low'].iloc[-1]
+            st.metric("Last Swing Low", f"{last_swing_low:.4f}")
+    
+    with col2:
+        st.markdown("### SMC Concepts Detected")
+        
+        concepts = []
+        if not df['FVG_Bullish'].isna().all() or not df['FVG_Bearish'].isna().all():
+            concepts.append("Fair Value Gaps")
+        if not df['OB_Bullish'].isna().all() or not df['OB_Bearish'].isna().all():
+            concepts.append("Order Blocks")
+        if zones:
+            concepts.append("Supply/Demand Zones")
+        if not df['Mitigation_Bullish'].isna().all() or not df['Mitigation_Bearish'].isna().all():
+            concepts.append("Mitigation Blocks")
+        
+        for concept in concepts:
+            st.markdown(f'- {concept}')
+    
+    with col3:
+        st.markdown("### Risk Levels")
+        
+        # Calculate volatility
+        atr = ta.atr(df['High'], df['Low'], df['Close'], length=14).iloc[-1]
+        volatility_pct = (atr / current_price) * 100
+        
+        if volatility_pct < 1:
+            risk_level = "Low"
+            color = "green"
+        elif volatility_pct < 3:
+            risk_level = "Medium"
+            color = "orange"
+        else:
+            risk_level = "High"
+            color = "red"
+        
+        st.metric("Volatility (ATR %)", f"{volatility_pct:.2f}%", risk_level)
+        
+        # Liquidity distance
+        dist_to_high = ((df['Recent_High'].iloc[-1] - current_price) / current_price) * 100
+        dist_to_low = ((current_price - df['Recent_Low'].iloc[-1]) / current_price) * 100
+        
+        st.metric("Dist to Liquidity High", f"{dist_to_high:.2f}%")
+        st.metric("Dist to Liquidity Low", f"{dist_to_low:.2f}%")
+    
+    # Asset Comparison
+    st.subheader("📊 Asset Comparison")
+    
+    # Get comparison data for category
+    comparison_assets = list(assets.keys())[:5]  # First 5 assets
+    comparison_data = []
+    
+    for asset_name in comparison_assets:
+        asset_cfg = assets[asset_name]
+        try:
+            comp_df = fetch_asset_data(
+                asset_cfg['symbol'],
+                asset_cfg['type'],
+                '1d'
+            )
+            if not comp_df.empty:
+                change = ((comp_df['Close'].iloc[-1] - comp_df['Close'].iloc[-2]) / 
+                         comp_df['Close'].iloc[-2]) * 100
+                comparison_data.append({
+                    'Asset': asset_name,
+                    'Price': comp_df['Close'].iloc[-1],
+                    'Change %': change,
+                    'Type': asset_cfg['type']
+                })
+        except:
+            continue
+    
+    if comparison_data:
+        comp_df = pd.DataFrame(comparison_data)
+        st.dataframe(comp_df, use_container_width=True)
+    
+    # Strategy Guidelines
+    with st.expander("📖 SMC Trading Strategy Guidelines"):
+        st.markdown("""
+        ## Smart Money Concepts Trading Rules
+        
+        ### Entry Conditions (Confluence Required):
+        
+        **Bullish Setup:**
+        1. ✅ Price in or approaching Demand Zone
+        2. ✅ Bullish FVG being filled
+        3. ✅ Bullish Order Block present
+        4. ✅ Price above recent liquidity low (no break)
+        5. ✅ Market structure: Higher Highs & Higher Lows
+        
+        **Bearish Setup:**
+        1. ✅ Price in or approaching Supply Zone
+        2. ✅ Bearish FVG being filled
+        3. ✅ Bearish Order Block present
+        4. ✅ Price below recent liquidity high (no break)
+        5. ✅ Market structure: Lower Highs & Lower Lows
+        
+        ### Risk Management:
+        - Stop Loss: Below Demand Zone (bullish) / Above Supply Zone (bearish)
+        - Take Profit 1: 1:1 Risk-Reward
+        - Take Profit 2: Next liquidity level
+        - Position Size: 1-2% of capital per trade
+        
+        ### Key Concepts:
+        - **Fair Value Gaps (FVG):** Price voids that often get filled
+        - **Order Blocks:** Areas where institutional orders were placed
+        - **Liquidity Grabs:** Price moves to take out stops before reversing
+        - **Mitigation Blocks:** Failed order blocks that get reclaimed
+        - **BOS/CHOCH:** Break of Structure / Change of Character
+        """)
 
 if __name__ == "__main__":
     main()
