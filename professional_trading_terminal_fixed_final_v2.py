@@ -5,8 +5,6 @@ import numpy as np
 import yfinance as yf
 from datetime import datetime, timedelta
 import warnings
-import time
-import random
 warnings.filterwarnings('ignore')
 
 # Page configuration
@@ -504,7 +502,7 @@ class Backtester:
                 if signal['type'] == 'BUY':
                     exit_price = df['Close'].iloc[exit_index]
                     pnl = (exit_price - entry_price) * signal['size']
-                else:  'SELL'
+                else:  # SELL
                     exit_price = df['Close'].iloc[exit_index]
                     pnl = (entry_price - exit_price) * signal['size']
                 
