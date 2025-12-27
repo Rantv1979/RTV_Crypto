@@ -560,7 +560,7 @@ TRADING_STRATEGIES = {
 }
 
 # Terminal Header with Auto-refresh Indicator
-st.markdown("""
+st.markdown(f"""
 <div class="main-header">
     <h1 class="main-title">🚀 RTV SMC ALGORITHMIC TRADING TERMINAL</h1>
     <p style="text-align: center; color: #94a3b8; margin: 10px 0;">Professional Intraday Trading System</p>
@@ -773,9 +773,11 @@ def add_enhanced_indicators(df):
 
 # Enhanced SMC Algorithm with Multiple Strategies
 class AdvancedSMCAlgorithm:
-    def __init__(self, strategy="SMC Pro"):
+    def __init__(self, strategy="SMC Pro", fvg_lookback=5, swing_period=3):
         self.strategy = strategy
         self.config = TRADING_STRATEGIES.get(strategy, TRADING_STRATEGIES["SMC Pro"])
+        self.fvg_lookback = fvg_lookback
+        self.swing_period = swing_period
         
     def analyze_market_structure(self, df):
         """Advanced market structure analysis"""
@@ -898,9 +900,14 @@ class AdvancedSMCAlgorithm:
         position_size = risk_amount / stop_distance
         position_size = min(position_size, asset_info['lot_size'] * 5)  # Conservative sizing
         
+        # Get FVG data
+        fvg_bullish = latest.get('fvg_bullish', np.nan)
+        fvg_width = latest.get('fvg_width', 0)
+        
         # Signal 1: FVG Fill with RSI Confluence
-        if not pd.isna(latest.get('fvg_bullish', np.nan)):
-            fvg_top = latest['fvg_bullish'] + latest.get('fvg_width', 0)
+        if not pd.isna(fvg_bullish):
+            fvg_top = fvg_bullish + fvg_width
+            fvg_bottom = fvg_bullish
             current_price = latest['close']
             
             # Check if price is filling the FVG
@@ -916,9 +923,13 @@ class AdvancedSMCAlgorithm:
                 if latest.get('volume_ratio', 1) > 1.5:
                     confidence += 0.10
                 
+                # Increase confidence with market structure
+                if latest['market_structure'] == 'uptrend':
+                    confidence += 0.10
+                
                 if confidence >= self.config['confidence_threshold']:
                     entry = current_price
-                    stop_loss = latest['fvg_bullish'] - (atr_value * 0.5)
+                    stop_loss = fvg_bottom - (atr_value * 0.5)
                     take_profit = entry + (atr_value * take_profit_atr)
                     
                     signals.append({
@@ -936,34 +947,155 @@ class AdvancedSMCAlgorithm:
                         'timestamp': datetime.now()
                     })
         
-        # Similar logic for bearish FVG and other patterns...
-        
-        return signals
-    
-    def generate_momentum_signals(self, df, asset_info):
-        """Generate momentum breakout signals"""
-        signals = []
-        
-        if len(df) < 30:
-            return signals
-        
-        latest = df.iloc[-1]
-        
-        # Bollinger Band Breakout
-        if latest['close'] > latest['bb_upper']:
-            # Check for volume confirmation
-            if latest.get('volume_ratio', 1) > 1.3:
-                confidence = 0.70
+        # Signal 2: Bearish FVG
+        fvg_bearish = latest.get('fvg_bearish', np.nan)
+        if not pd.isna(fvg_bearish):
+            fvg_top = fvg_bearish
+            fvg_bottom = fvg_bearish - latest.get('fvg_width', 0)
+            current_price = latest['close']
+            
+            if fvg_bottom <= current_price <= fvg_top:
+                rsi = latest['rsi']
+                confidence = 0.65
                 
-                # Increase confidence with RSI
-                if latest['rsi'] > 60 and latest['rsi'] < 80:
+                if rsi > 65:
+                    confidence += 0.15
+                
+                if latest.get('volume_ratio', 1) > 1.5:
+                    confidence += 0.10
+                
+                if latest['market_structure'] == 'downtrend':
                     confidence += 0.10
                 
                 if confidence >= self.config['confidence_threshold']:
-                    # Generate buy signal for breakout
-                    pass
+                    entry = current_price
+                    stop_loss = fvg_top + (atr_value * 0.5)
+                    take_profit = entry - (atr_value * take_profit_atr)
+                    
+                    signals.append({
+                        'asset': asset_info['symbol'],
+                        'asset_name': selected_asset,
+                        'type': 'SELL',
+                        'entry': entry,
+                        'stop_loss': stop_loss,
+                        'take_profit': take_profit,
+                        'size': position_size,
+                        'confidence': min(confidence, 0.95),
+                        'strategy': 'SMC FVG Fill',
+                        'reason': f'Bearish FVG fill with RSI: {rsi:.1f}',
+                        'conditions': ['FVG', f'RSI: {rsi:.1f}', 'Volume Confirmation'],
+                        'timestamp': datetime.now()
+                    })
         
-        return signals
+        # Signal 3: Order Block + RSI
+        ob_bullish = latest.get('ob_bullish', np.nan)
+        if not pd.isna(ob_bullish):
+            current_price = latest['close']
+            rsi = latest['rsi']
+            
+            if abs(current_price - ob_bullish) / current_price < 0.002:  # Within 0.2% of OB
+                confidence = 0.70
+                
+                if rsi < 40:
+                    confidence += 0.15
+                
+                if latest['market_structure'] == 'uptrend':
+                    confidence += 0.10
+                
+                if confidence >= self.config['confidence_threshold']:
+                    entry = current_price
+                    stop_loss = ob_bullish - (atr_value * stop_loss_atr)
+                    take_profit = entry + (atr_value * take_profit_atr)
+                    
+                    signals.append({
+                        'asset': asset_info['symbol'],
+                        'asset_name': selected_asset,
+                        'type': 'BUY',
+                        'entry': entry,
+                        'stop_loss': stop_loss,
+                        'take_profit': take_profit,
+                        'size': position_size,
+                        'confidence': confidence,
+                        'strategy': 'SMC Order Block',
+                        'reason': f'Bullish Order Block with RSI: {rsi:.1f}',
+                        'conditions': ['Order Block', f'RSI: {rsi:.1f}', 'Uptrend'],
+                        'timestamp': datetime.now()
+                    })
+        
+        # Signal 4: Break of Structure (BOS)
+        swing_highs = df[df['swing_high']]
+        swing_lows = df[df['swing_low']]
+        
+        if len(swing_highs) > 0 and len(swing_lows) > 0:
+            last_swing_high = swing_highs['high'].iloc[-1]
+            last_swing_low = swing_lows['low'].iloc[-1]
+            current_price = latest['close']
+            
+            # Bullish BOS
+            if current_price > last_swing_high and latest['rsi'] > 50:
+                confidence = 0.75
+                distance = current_price - last_swing_high
+                
+                if distance > atr_value * 0.5:
+                    confidence += 0.10
+                
+                if latest.get('volume_ratio', 1) > 1.2:
+                    confidence += 0.10
+                
+                if confidence >= self.config['confidence_threshold']:
+                    entry = current_price
+                    stop_loss = last_swing_low
+                    take_profit = entry + (distance * 2)
+                    
+                    signals.append({
+                        'asset': asset_info['symbol'],
+                        'asset_name': selected_asset,
+                        'type': 'BUY',
+                        'entry': entry,
+                        'stop_loss': stop_loss,
+                        'take_profit': take_profit,
+                        'size': position_size,
+                        'confidence': confidence,
+                        'strategy': 'SMC Break of Structure',
+                        'reason': f'Bullish BOS above swing high',
+                        'conditions': ['BOS', f'RSI: {latest["rsi"]:.1f}', 'Volume Confirmation'],
+                        'timestamp': datetime.now()
+                    })
+            
+            # Bearish BOS
+            elif current_price < last_swing_low and latest['rsi'] < 50:
+                confidence = 0.75
+                distance = last_swing_low - current_price
+                
+                if distance > atr_value * 0.5:
+                    confidence += 0.10
+                
+                if latest.get('volume_ratio', 1) > 1.2:
+                    confidence += 0.10
+                
+                if confidence >= self.config['confidence_threshold']:
+                    entry = current_price
+                    stop_loss = last_swing_high
+                    take_profit = entry - (distance * 2)
+                    
+                    signals.append({
+                        'asset': asset_info['symbol'],
+                        'asset_name': selected_asset,
+                        'type': 'SELL',
+                        'entry': entry,
+                        'stop_loss': stop_loss,
+                        'take_profit': take_profit,
+                        'size': position_size,
+                        'confidence': confidence,
+                        'strategy': 'SMC Break of Structure',
+                        'reason': f'Bearish BOS below swing low',
+                        'conditions': ['BOS', f'RSI: {latest["rsi"]:.1f}', 'Volume Confirmation'],
+                        'timestamp': datetime.now()
+                    })
+        
+        # Sort by confidence
+        signals = sorted(signals, key=lambda x: x['confidence'], reverse=True)
+        return signals[:3]  # Return top 3 signals
 
 # Enhanced Trading Engine
 class TradingEngine:
@@ -1108,8 +1240,8 @@ class TradingEngine:
         
         # Update win/loss stats
         for trade_id in positions_closed:
-            position = self.portfolio['positions'].get(trade_id)
-            if position:
+            if trade_id in self.portfolio['positions']:
+                position = self.portfolio['positions'][trade_id]
                 if position['pnl'] > 0:
                     self.portfolio['winning_trades'] += 1
                 else:
@@ -1160,7 +1292,8 @@ class TradingEngine:
             
             # Remove from positions
             del self.portfolio['positions'][trade_id]
-            self.traded_symbols.discard(position['asset'])
+            if position['asset'] in self.traded_symbols:
+                self.traded_symbols.remove(position['asset'])
             
             return True
         
@@ -1181,7 +1314,7 @@ def auto_refresh_data():
 def main():
     # Initialize trading engine
     trading_engine = TradingEngine()
-    smc_algo = AdvancedSMCAlgorithm(strategy=selected_strategy)
+    smc_algo = AdvancedSMCAlgorithm(strategy=selected_strategy, fvg_lookback=fvg_period, swing_period=swing_period)
     
     # Display Dashboard Metrics
     st.markdown('<div class="metric-grid">', unsafe_allow_html=True)
@@ -1249,22 +1382,23 @@ def main():
     st.markdown('</div>', unsafe_allow_html=True)
     
     # Auto-refresh controls
-    st.markdown("""
+    last_update_str = st.session_state.last_update.strftime('%H:%M:%S')
+    refresh_interval_str = st.session_state.refresh_interval
+    
+    st.markdown(f"""
     <div class="refresh-controls">
         <div style="display: flex; justify-content: space-between; align-items: center;">
             <div>
                 <strong>🔄 Auto-refresh Status:</strong>
                 <span style="color: #10b981; margin-left: 10px;">ACTIVE</span>
-                <span style="color: #94a3b8; margin-left: 20px;">Interval: {st.session_state.refresh_interval}s</span>
+                <span style="color: #94a3b8; margin-left: 20px;">Interval: {refresh_interval_str}s</span>
             </div>
             <div>
-                <span style="color: #94a3b8;">Last update: {st.session_state.last_update.strftime('%H:%M:%S')}</span>
+                <span style="color: #94a3b8;">Last update: {last_update_str}</span>
             </div>
         </div>
     </div>
-    """.format(
-        st.session_state=st.session_state
-    ), unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
     
     # Main Tabs
     tab1, tab2, tab3, tab4 = st.tabs([
@@ -1377,7 +1511,7 @@ def main():
             if st.button("📊 Scan All Assets"):
                 with st.spinner("Scanning all assets for opportunities..."):
                     # Implement multi-asset scan
-                    pass
+                    st.info("Multi-asset scan feature coming soon!")
         
         with col3:
             if st.button("💰 Update Positions"):
@@ -1385,6 +1519,7 @@ def main():
                 market_prices = {asset_info['symbol']: current_price}
                 pnl = trading_engine.update_positions(market_prices)
                 st.success(f"Positions updated! Current P&L: ${pnl:+.2f}")
+                st.rerun()
     
     with tab2:
         st.subheader("Multi-Asset Signal Scanner")
@@ -1404,6 +1539,8 @@ def main():
             
             with st.spinner(f"🔍 Scanning {len(scan_categories)} categories..."):
                 progress_bar = st.progress(0)
+                total_assets = sum(len(ASSET_CONFIG[cat]) for cat in scan_categories)
+                scanned = 0
                 
                 for cat_idx, category in enumerate(scan_categories):
                     st.write(f"**{category}**")
@@ -1425,8 +1562,9 @@ def main():
                                         all_signals.append(signal)
                         except:
                             continue
-                    
-                    progress_bar.progress((cat_idx + 1) / len(scan_categories))
+                        
+                        scanned += 1
+                        progress_bar.progress(scanned / total_assets)
                 
                 progress_bar.empty()
             
@@ -1456,6 +1594,7 @@ def main():
                                     success, trade_id = trading_engine.execute_trade(signal, signal['entry'])
                                     if success:
                                         st.success(f"Trade executed: {trade_id}")
+                                        st.rerun()
                                     else:
                                         st.error("Execution failed")
             else:
@@ -1504,26 +1643,37 @@ def main():
         st.markdown("---")
         st.subheader("📈 Portfolio Statistics")
         
-        col1, col2, col3, col4 = st.columns(4)
+        # Calculate performance metrics
+        closed_trades = [log for log in st.session_state.trade_log if log['action'] == 'CLOSE']
         
-        with col1:
-            win_rate = st.session_state.paper_portfolio['winning_trades']
-            loss_rate = st.session_state.paper_portfolio['losing_trades']
-            total = win_rate + loss_rate
-            rate = (win_rate / total * 100) if total > 0 else 0
-            st.metric("Win Rate", f"{rate:.1f}%")
-        
-        with col2:
-            avg_win = 0  # Calculate from trade history
-            st.metric("Avg Win", f"${avg_win:,.2f}")
-        
-        with col3:
-            avg_loss = 0  # Calculate from trade history
-            st.metric("Avg Loss", f"${avg_loss:,.2f}")
-        
-        with col4:
-            profit_factor = 0  # Calculate from trade history
-            st.metric("Profit Factor", f"{profit_factor:.2f}")
+        if closed_trades:
+            winning_trades = [t for t in closed_trades if t.get('pnl', 0) > 0]
+            losing_trades = [t for t in closed_trades if t.get('pnl', 0) < 0]
+            
+            total_wins = len(winning_trades)
+            total_losses = len(losing_trades)
+            total_trades = total_wins + total_losses
+            
+            avg_win = np.mean([t.get('pnl', 0) for t in winning_trades]) if winning_trades else 0
+            avg_loss = np.mean([abs(t.get('pnl', 0)) for t in losing_trades]) if losing_trades else 0
+            win_rate = (total_wins / total_trades * 100) if total_trades > 0 else 0
+            
+            profit_factor = (sum(t.get('pnl', 0) for t in winning_trades) / 
+                           abs(sum(t.get('pnl', 0) for t in losing_trades))) if losing_trades else 0
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("Win Rate", f"{win_rate:.1f}%")
+            
+            with col2:
+                st.metric("Total Trades", total_trades)
+            
+            with col3:
+                st.metric("Profit Factor", f"{profit_factor:.2f}")
+            
+            with col4:
+                st.metric("Avg Win/Loss", f"${avg_win:.2f}/${avg_loss:.2f}")
     
     with tab4:
         st.subheader("Trade History & Analytics")
@@ -1532,8 +1682,8 @@ def main():
             # Filters
             col1, col2, col3 = st.columns(3)
             with col1:
-                filter_asset = st.selectbox("Filter Asset", 
-                                          ["All"] + sorted(set([log.get('asset', '') for log in st.session_state.trade_log if log.get('asset')])))
+                unique_assets = sorted(set([log.get('asset', '') for log in st.session_state.trade_log if log.get('asset')]))
+                filter_asset = st.selectbox("Filter Asset", ["All"] + unique_assets)
             with col2:
                 filter_action = st.selectbox("Filter Action", ["All", "OPEN", "CLOSE"])
             with col3:
