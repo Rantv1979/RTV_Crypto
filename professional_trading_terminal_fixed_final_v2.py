@@ -1,243 +1,378 @@
+# app.py - Smart Money Concepts Trading Dashboard
+# Minimal dependencies for Streamlit Cloud
 
-# ======================================================================
-# RANTV_CRYPTO_ALGO_PRO_FINAL.py
-# ONE SINGLE FILE – CRYPTO TRADING VERSION
-#
-# Exchanges supported via CCXT (Binance default)
-#
-# Includes:
-# - Multi-Timeframe SMC (HTF BOS + LTF FVG/OB)
-# - Session logic adapted for crypto (London / NY)
-# - Volume Profile (POC)
-# - Equity-curve auto risk scaling
-# - Trailing SL + partial exits
-# - Live multi-symbol scanner
-# - Streamlit dashboard
-# - Performance analytics
-# - Exchange-safe kill switch
-#
-# ======================================================================
-
-import time
-import threading
-import logging
-from datetime import datetime, time as dtime
-from typing import Dict, List
-
-import numpy as np
+import streamlit as st
 import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import warnings
+warnings.filterwarnings('ignore')
 
-# ========================= UI =========================
-try:
-    import streamlit as st
-    STREAMLIT = True
-except:
-    STREAMLIT = False
+# Set page config
+st.set_page_config(
+    page_title="SMC Trading Dashboard",
+    page_icon="📊",
+    layout="wide"
+)
 
-# ========================= CCXT =========================
-try:
-    import ccxt
-    CCXT_AVAILABLE = True
-except:
-    CCXT_AVAILABLE = False
+# Add custom CSS
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        color: #1E3A8A;
+        text-align: center;
+        margin-bottom: 1rem;
+    }
+    .signal-bullish {
+        background-color: #D1FAE5;
+        color: #065F46;
+        padding: 1rem;
+        border-radius: 10px;
+        font-weight: bold;
+        border-left: 5px solid #10B981;
+        margin-bottom: 1rem;
+    }
+    .signal-bearish {
+        background-color: #FEE2E2;
+        color: #991B1B;
+        padding: 1rem;
+        border-radius: 10px;
+        font-weight: bold;
+        border-left: 5px solid #EF4444;
+        margin-bottom: 1rem;
+    }
+    .metric-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 1rem;
+        border-radius: 10px;
+        text-align: center;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# ========================= CONFIG =========================
-class Config:
-    PAPER_TRADING = True
-    CAPITAL = 50_000  # USDT
+# Title
+st.title("📊 Smart Money Concepts Trading Dashboard")
+st.markdown("---")
 
-    BASE_RISK = 0.01
-    MAX_RISK = 0.02
-    MIN_RISK = 0.005
+# Sidebar Configuration
+st.sidebar.header("Configuration")
 
-    SL_ATR = 1.5
-    TP_ATR = 3.0
-    TRAIL_ATR = 1.2
+# Asset selection
+assets = {
+    "Cryptocurrencies": {
+        "BTC/USD": "BTC-USD",
+        "ETH/USD": "ETH-USD", 
+        "SOL/USD": "SOL-USD",
+        "XRP/USD": "XRP-USD"
+    },
+    "Forex": {
+        "EUR/USD": "EURUSD=X",
+        "GBP/USD": "GBPUSD=X",
+        "USD/JPY": "JPY=X",
+        "AUD/USD": "AUDUSD=X"
+    },
+    "Commodities": {
+        "Gold": "GC=F",
+        "Silver": "SI=F",
+        "Crude Oil": "CL=F",
+        "Copper": "HG=F"
+    }
+}
 
-    HTF = "30m"
-    LTF = "5m"
-    SCAN_INTERVAL = 60
+asset_category = st.sidebar.selectbox("Asset Category", list(assets.keys()))
+selected_pair = st.sidebar.selectbox("Select Asset", list(assets[asset_category].keys()))
+symbol = assets[asset_category][selected_pair]
 
-    LONDON_OPEN = dtime(7,0)
-    NY_OPEN = dtime(13,30)
+# Timeframe selection
+timeframe = st.sidebar.selectbox("Timeframe", ["1h", "4h", "1d", "1wk"], index=2)
 
-# ========================= LOGGING =========================
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(message)s")
-logger = logging.getLogger("RANTV-CRYPTO")
+# SMC Parameters
+st.sidebar.header("SMC Parameters")
+fvg_lookback = st.sidebar.slider("FVG Lookback", 3, 10, 5)
+swing_period = st.sidebar.slider("Swing Period", 2, 5, 3)
 
-# ========================= SYMBOL UNIVERSE =========================
-CRYPTO_UNIVERSE = [
-    "BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT",
-    "XRP/USDT","ADA/USDT","AVAX/USDT","DOGE/USDT"
-]
+# Display Options
+st.sidebar.header("Display Options")
+show_structure = st.sidebar.checkbox("Show Market Structure", True)
+show_signals = st.sidebar.checkbox("Show Trading Signals", True)
 
-# ========================= INDICATORS =========================
-def ema(series, n):
-    return series.ewm(span=n).mean()
+# SMC Analysis Functions
+def calculate_smc_indicators(df):
+    """Calculate Smart Money Concepts indicators"""
+    df = df.copy()
+    
+    # 1. Calculate Swing Highs and Lows
+    df['Swing_High'] = False
+    df['Swing_Low'] = False
+    
+    for i in range(swing_period, len(df) - swing_period):
+        # Check for swing high
+        if all(df['High'].iloc[i] > df['High'].iloc[i-j] for j in range(1, swing_period+1)) and \
+           all(df['High'].iloc[i] > df['High'].iloc[i+j] for j in range(1, swing_period+1)):
+            df.loc[df.index[i], 'Swing_High'] = True
+        
+        # Check for swing low
+        if all(df['Low'].iloc[i] < df['Low'].iloc[i-j] for j in range(1, swing_period+1)) and \
+           all(df['Low'].iloc[i] < df['Low'].iloc[i+j] for j in range(1, swing_period+1)):
+            df.loc[df.index[i], 'Swing_Low'] = True
+    
+    # 2. Determine Market Structure
+    df['Market_Structure'] = 'Neutral'
+    swing_highs = df[df['Swing_High']]
+    swing_lows = df[df['Swing_Low']]
+    
+    if len(swing_highs) >= 2 and len(swing_lows) >= 2:
+        if swing_highs.index[-1] > swing_lows.index[-1]:
+            if swing_highs['High'].iloc[-1] > swing_highs['High'].iloc[-2]:
+                df.loc[swing_highs.index[-1]:, 'Market_Structure'] = 'Uptrend'
+        else:
+            if swing_lows['Low'].iloc[-1] < swing_lows['Low'].iloc[-2]:
+                df.loc[swing_lows.index[-1]:, 'Market_Structure'] = 'Downtrend'
+    
+    # 3. Calculate Fair Value Gaps (FVG)
+    df['FVG_Bullish'] = np.nan
+    df['FVG_Bearish'] = np.nan
+    
+    for i in range(fvg_lookback, len(df)-1):
+        if df['High'].iloc[i] < df['Low'].iloc[i+1]:
+            df.loc[df.index[i], 'FVG_Bullish'] = df['High'].iloc[i]
+        elif df['Low'].iloc[i] > df['High'].iloc[i+1]:
+            df.loc[df.index[i], 'FVG_Bearish'] = df['Low'].iloc[i]
+    
+    # 4. Calculate Support and Resistance Levels
+    df['Support'] = df['Low'].rolling(window=20).min()
+    df['Resistance'] = df['High'].rolling(window=20).max()
+    
+    return df
 
-def atr(df, n=14):
-    tr = pd.concat([
-        df.high - df.low,
-        (df.high - df.close.shift()).abs(),
-        (df.low - df.close.shift()).abs()
-    ], axis=1).max(axis=1)
-    return tr.rolling(n).mean()
+def generate_trading_signals(df):
+    """Generate trading signals based on SMC concepts"""
+    signals = []
+    
+    if len(df) < 10:
+        return signals
+    
+    latest = df.iloc[-1]
+    
+    # Check for bullish signals
+    bullish_fvg = not pd.isna(latest['FVG_Bullish'])
+    above_support = latest['Close'] > latest['Support']
+    uptrend = latest['Market_Structure'] == 'Uptrend'
+    
+    if bullish_fvg and above_support:
+        signals.append({
+            'type': 'BUY',
+            'strength': 'Strong' if uptrend else 'Medium',
+            'reason': 'Bullish FVG at support level',
+            'entry': latest['Close'],
+            'stop_loss': latest['Support'] * 0.99,
+            'take_profit': latest['Close'] * 1.02
+        })
+    
+    # Check for bearish signals
+    bearish_fvg = not pd.isna(latest['FVG_Bearish'])
+    below_resistance = latest['Close'] < latest['Resistance']
+    downtrend = latest['Market_Structure'] == 'Downtrend'
+    
+    if bearish_fvg and below_resistance:
+        signals.append({
+            'type': 'SELL',
+            'strength': 'Strong' if downtrend else 'Medium',
+            'reason': 'Bearish FVG at resistance level',
+            'entry': latest['Close'],
+            'stop_loss': latest['Resistance'] * 1.01,
+            'take_profit': latest['Close'] * 0.98
+        })
+    
+    return signals
 
-# ========================= SESSION FILTER =========================
-def valid_session():
-    now = datetime.utcnow().time()
-    return now >= Config.LONDON_OPEN or now >= Config.NY_OPEN
+# Generate synthetic data (for demonstration)
+def generate_sample_data():
+    """Generate sample price data for demonstration"""
+    dates = pd.date_range(start='2024-01-01', end=datetime.now(), freq='H')
+    n = len(dates)
+    
+    # Generate trending price with noise
+    trend = np.linspace(100, 150, n)
+    noise = np.random.normal(0, 2, n)
+    prices = trend + noise
+    
+    df = pd.DataFrame({
+        'Open': prices - np.random.uniform(0.5, 1.5, n),
+        'High': prices + np.random.uniform(0.5, 2, n),
+        'Low': prices - np.random.uniform(0.5, 2, n),
+        'Close': prices,
+        'Volume': np.random.randint(1000, 10000, n)
+    }, index=dates)
+    
+    return df
 
-# ========================= VOLUME PROFILE =========================
-def volume_profile(df, bins=24):
-    hist, edges = np.histogram(df.close, bins=bins, weights=df.volume)
-    idx = np.argmax(hist)
-    return (edges[idx] + edges[idx+1]) / 2
-
-# ========================= SMC =========================
-class SMC:
-    @staticmethod
-    def BOS(df):
-        if df.high.iloc[-1] > df.high.iloc[-6:-1].max():
-            return "BULLISH"
-        if df.low.iloc[-1] < df.low.iloc[-6:-1].min():
-            return "BEARISH"
-        return None
-
-    @staticmethod
-    def FVG(df):
-        a,b,c = df.iloc[-3], df.iloc[-2], df.iloc[-1]
-        if a.high < c.low:
-            return "BULLISH"
-        if a.low > c.high:
-            return "BEARISH"
-        return None
-
-    @staticmethod
-    def OrderBlock(df):
-        last = df.iloc[-2]
-        return "BULLISH" if last.close > last.open else "BEARISH"
-
-# ========================= SIGNAL ENGINE =========================
-class SignalEngine:
-    def generate(self, htf, ltf):
-        if not valid_session():
-            return None
-
-        bos = SMC.BOS(htf)
-        fvg = SMC.FVG(ltf)
-        ob = SMC.OrderBlock(ltf)
-        poc = volume_profile(ltf)
-
-        price = ltf.close.iloc[-1]
-        atr_val = atr(ltf).iloc[-1]
-
-        if bos=="BULLISH" and fvg=="BULLISH" and ob=="BULLISH" and price>poc:
-            return {"side":"BUY","sl":price-atr_val*Config.SL_ATR,"tp":price+atr_val*Config.TP_ATR}
-
-        if bos=="BEARISH" and fvg=="BEARISH" and ob=="BEARISH" and price<poc:
-            return {"side":"SELL","sl":price+atr_val*Config.SL_ATR,"tp":price-atr_val*Config.TP_ATR}
-
-        return None
-
-# ========================= PERFORMANCE =========================
-class Performance:
-    def __init__(self):
-        self.trades=[]
-
-    def log(self, symbol, pnl):
-        self.trades.append({"time":datetime.utcnow(),"symbol":symbol,"pnl":pnl})
-
-    def stats(self):
-        if not self.trades: return {}
-        df=pd.DataFrame(self.trades)
-        return {
-            "Trades":len(df),
-            "Win Rate":round((df.pnl>0).mean()*100,2),
-            "Net PnL":round(df.pnl.sum(),2)
-        }
-
-# ========================= EXCHANGE =========================
-class Exchange:
-    def __init__(self):
-        if not CCXT_AVAILABLE:
-            raise RuntimeError("ccxt not installed")
-        self.ex = ccxt.binance({"enableRateLimit":True})
-
-    def fetch(self, symbol, tf, limit=200):
-        ohlcv = self.ex.fetch_ohlcv(symbol, timeframe=tf, limit=limit)
-        df = pd.DataFrame(ohlcv, columns=["time","open","high","low","close","volume"])
-        return df
-
-# ========================= LIVE SCANNER =========================
-class LiveScanner:
-    def __init__(self, ex):
-        self.ex = ex
-        self.engine = SignalEngine()
-        self.signals=[]
-        self.running=False
-
-    def start(self):
-        self.running=True
-        threading.Thread(target=self.loop, daemon=True).start()
-
-    def loop(self):
-        while self.running:
-            self.signals.clear()
-            for sym in CRYPTO_UNIVERSE:
-                try:
-                    ltf = self.ex.fetch(sym, Config.LTF)
-                    htf = self.ex.fetch(sym, Config.HTF)
-                    sig = self.engine.generate(htf, ltf)
-                    if sig:
-                        self.signals.append((sym, sig["side"]))
-                except Exception as e:
-                    logger.warning(f"{sym}: {e}")
-            time.sleep(Config.SCAN_INTERVAL)
-
-# ========================= STREAMLIT =========================
-def run_dashboard(scanner, perf):
-    st.set_page_config(layout="wide")
-    st.title("🚀 RANTV Crypto Algo Pro")
-
-    col1,col2,col3=st.columns(3)
-    col1.metric("Paper Trading", Config.PAPER_TRADING)
-    stats=perf.stats()
-    col2.metric("Trades", stats.get("Trades",0))
-    col3.metric("Net PnL", stats.get("Net PnL",0))
-
-    st.subheader("Live Signals")
-    st.table(pd.DataFrame(scanner.signals, columns=["Symbol","Side"]))
+# Main app logic
+def main():
+    # Display asset info
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.markdown("""
+        <div class="metric-card">
+            <h3>Asset</h3>
+            <h2>{}</h2>
+        </div>
+        """.format(selected_pair), unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("""
+        <div class="metric-card">
+            <h3>Category</h3>
+            <h2>{}</h2>
+        </div>
+        """.format(asset_category), unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown("""
+        <div class="metric-card">
+            <h3>Timeframe</h3>
+            <h2>{}</h2>
+        </div>
+        """.format(timeframe), unsafe_allow_html=True)
+    
+    with col4:
+        st.markdown("""
+        <div class="metric-card">
+            <h3>Symbol</h3>
+            <h2>{}</h2>
+        </div>
+        """.format(symbol), unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Generate and display sample data
+    st.subheader("📈 Price Data Analysis")
+    
+    df = generate_sample_data()
+    
+    if not df.empty:
+        # Calculate SMC indicators
+        df_smc = calculate_smc_indicators(df)
+        
+        # Display latest price
+        latest_price = df_smc['Close'].iloc[-1]
+        prev_price = df_smc['Close'].iloc[-2]
+        price_change = ((latest_price - prev_price) / prev_price) * 100
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Current Price", f"${latest_price:.2f}")
+        with col2:
+            st.metric("24h Change", f"{price_change:.2f}%")
+        with col3:
+            structure = df_smc['Market_Structure'].iloc[-1]
+            st.metric("Market Structure", structure)
+        
+        # Display price chart
+        st.subheader("Price Chart")
+        st.line_chart(df_smc['Close'].tail(100))
+        
+        # Display trading signals
+        if show_signals:
+            st.subheader("🚦 Trading Signals")
+            signals = generate_trading_signals(df_smc)
+            
+            if signals:
+                for signal in signals:
+                    if signal['type'] == 'BUY':
+                        st.markdown(f"""
+                        <div class="signal-bullish">
+                            <h3>📈 BUY SIGNAL ({signal['strength']})</h3>
+                            <p><strong>Reason:</strong> {signal['reason']}</p>
+                            <p><strong>Entry:</strong> ${signal['entry']:.2f}</p>
+                            <p><strong>Stop Loss:</strong> ${signal['stop_loss']:.2f}</p>
+                            <p><strong>Take Profit:</strong> ${signal['take_profit']:.2f}</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"""
+                        <div class="signal-bearish">
+                            <h3>📉 SELL SIGNAL ({signal['strength']})</h3>
+                            <p><strong>Reason:</strong> {signal['reason']}</p>
+                            <p><strong>Entry:</strong> ${signal['entry']:.2f}</p>
+                            <p><strong>Stop Loss:</strong> ${signal['stop_loss']:.2f}</p>
+                            <p><strong>Take Profit:</strong> ${signal['take_profit']:.2f}</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+            else:
+                st.info("No trading signals detected for current market conditions.")
+        
+        # Display SMC Analysis
+        if show_structure:
+            st.subheader("🏛️ Market Structure Analysis")
+            
+            # Show swing points
+            swing_highs = df_smc[df_smc['Swing_High']]
+            swing_lows = df_smc[df_smc['Swing_Low']]
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if not swing_highs.empty:
+                    st.write("**Recent Swing Highs:**")
+                    for idx in swing_highs.index[-3:]:
+                        st.write(f"- {idx.strftime('%Y-%m-%d %H:%M')}: ${swing_highs.loc[idx, 'High']:.2f}")
+            
+            with col2:
+                if not swing_lows.empty:
+                    st.write("**Recent Swing Lows:**")
+                    for idx in swing_lows.index[-3:]:
+                        st.write(f"- {idx.strftime('%Y-%m-%d %H:%M')}: ${swing_lows.loc[idx, 'Low']:.2f}")
+            
+            # Show FVGs
+            st.subheader("⚡ Fair Value Gaps (FVG)")
+            fvg_bullish = df_smc[~pd.isna(df_smc['FVG_Bullish'])]
+            fvg_bearish = df_smc[~pd.isna(df_smc['FVG_Bearish'])]
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if not fvg_bullish.empty:
+                    st.write("**Bullish FVGs:**")
+                    for idx in fvg_bullish.index[-3:]:
+                        st.write(f"- {idx.strftime('%Y-%m-%d %H:%M')}: ${fvg_bullish.loc[idx, 'FVG_Bullish']:.2f}")
+            
+            with col2:
+                if not fvg_bearish.empty:
+                    st.write("**Bearish FVGs:**")
+                    for idx in fvg_bearish.index[-3:]:
+                        st.write(f"- {idx.strftime('%Y-%m-%d %H:%M')}: ${fvg_bearish.loc[idx, 'FVG_Bearish']:.2f}")
+        
+        # Show raw data
+        with st.expander("📊 View Raw Data"):
+            st.dataframe(df_smc.tail(20))
+    
+    # SMC Education Section
+    st.markdown("---")
+    st.subheader("📚 Smart Money Concepts (SMC) Education")
+    
+    concepts = {
+        "Market Structure": "Analysis of price highs and lows to determine trend direction and potential reversal points.",
+        "Fair Value Gaps (FVG)": "Price voids that occur when there's a gap between candles, often targeted by institutional traders.",
+        "Order Blocks": "Areas where institutional orders are concentrated, creating supply and demand imbalances.",
+        "Liquidity Grabs": "Price moves designed to trigger stop losses before reversing in the intended direction.",
+        "Break of Structure (BOS)": "When price breaks through key support/resistance levels, indicating trend continuation.",
+        "Change of Character (CHOCH)": "When market structure shifts from uptrend to downtrend or vice versa."
+    }
+    
+    for concept, description in concepts.items():
+        with st.expander(f"**{concept}**"):
+            st.write(description)
+    
+    # Footer
+    st.markdown("---")
+    st.markdown("""
+    <div style='text-align: center; color: gray;'>
+    <p><strong>Smart Money Concepts Trading Dashboard</strong> | Educational Purpose Only</p>
+    <p>This dashboard demonstrates SMC concepts using synthetic data.</p>
+    </div>
+    """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
-    st.sidebar.success("Streamlit UI Loaded")
-
-    # Safe singletons
-    if "scanner_started" not in st.session_state:
-        st.session_state.scanner_started = False
-
-    st.subheader("System Status")
-    st.write("Paper Trading:", Config.PAPER_TRADING)
-
-    # Start scanner only once
-    if not st.session_state.scanner_started:
-        try:
-            exchange = Exchange()
-            scanner = LiveScanner(exchange)
-            scanner.start()
-            st.session_state.scanner_started = True
-            st.success("Live scanner started")
-        except Exception as e:
-            st.error(f"Scanner error: {e}")
-
-    # Display signals
-    if "scanner" in locals():
-        st.subheader("Live Signals")
-        if scanner.signals:
-            st.table(pd.DataFrame(scanner.signals, columns=["Symbol", "Signal"]))
-        else:
-            st.info("No signals yet")
-
-
-# ========================= END =========================
-
+    main()
