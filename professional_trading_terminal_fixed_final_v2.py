@@ -209,4 +209,35 @@ def run_dashboard(scanner, perf):
     st.subheader("Live Signals")
     st.table(pd.DataFrame(scanner.signals, columns=["Symbol","Side"]))
 
+if __name__ == "__main__":
+    st.sidebar.success("Streamlit UI Loaded")
+
+    # Safe singletons
+    if "scanner_started" not in st.session_state:
+        st.session_state.scanner_started = False
+
+    st.subheader("System Status")
+    st.write("Paper Trading:", Config.PAPER_TRADING)
+
+    # Start scanner only once
+    if not st.session_state.scanner_started:
+        try:
+            exchange = Exchange()
+            scanner = LiveScanner(exchange)
+            scanner.start()
+            st.session_state.scanner_started = True
+            st.success("Live scanner started")
+        except Exception as e:
+            st.error(f"Scanner error: {e}")
+
+    # Display signals
+    if "scanner" in locals():
+        st.subheader("Live Signals")
+        if scanner.signals:
+            st.table(pd.DataFrame(scanner.signals, columns=["Symbol", "Signal"]))
+        else:
+            st.info("No signals yet")
+
+
 # ========================= END =========================
+
