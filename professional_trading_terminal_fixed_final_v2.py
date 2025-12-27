@@ -1,735 +1,1144 @@
-# app.py - RTV SMC Professional Algorithmic Trading Terminal
+# app.py - RTV SMC Intraday Algorithmic Trading Terminal Pro
 import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 import warnings
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import time as tm
+import threading
+from queue import Queue
+import json
+import os
+import schedule
+import asyncio
+from typing import Dict, List, Optional, Tuple, Set
+import random
+import traceback
+from collections import defaultdict
 import pytz
 warnings.filterwarnings('ignore')
 
-# Page configuration
+# Page configuration for professional trading terminal
 st.set_page_config(
-    page_title="RTV SMC Algo Trading Terminal",
-    page_icon="📊",
+    page_title="RTV SMC Pro Trading Terminal",
+    page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Professional CSS Theme
+# Professional Trading Terminal CSS with auto-refresh indicators
 st.markdown("""
 <style>
+    /* Main Theme */
     :root {
-        --primary-color: #1e3a8a;
-        --secondary-color: #0f172a;
-        --accent-color: #3b82f6;
-        --profit-color: #10b981;
-        --loss-color: #ef4444;
-        --neutral-color: #6b7280;
+        --primary-bg: #0a0e17;
+        --secondary-bg: #141b2d;
+        --accent-blue: #3b82f6;
+        --accent-green: #10b981;
+        --accent-red: #ef4444;
+        --accent-yellow: #f59e0b;
+        --accent-purple: #8b5cf6;
+        --text-primary: #f8fafc;
+        --text-secondary: #94a3b8;
+        --border-color: #334155;
     }
     
+    /* Main Container */
+    .stApp {
+        background: var(--primary-bg);
+        color: var(--text-primary);
+    }
+    
+    /* Header */
     .main-header {
-        background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
-        padding: 1.5rem;
-        border-radius: 10px;
+        background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%);
+        padding: 1.5rem 2rem;
+        border-radius: 12px;
         margin-bottom: 1.5rem;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+        border: 1px solid var(--border-color);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        position: relative;
+        overflow: hidden;
+    }
+    
+    .main-header::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 3px;
+        background: linear-gradient(90deg, #10b981, #3b82f6, #8b5cf6);
     }
     
     .main-title {
-        font-size: 2.5rem;
+        font-size: 2.8rem;
         font-weight: 800;
-        background: linear-gradient(45deg, #ffffff, #dbeafe);
+        background: linear-gradient(45deg, #60a5fa, #8b5cf6, #ec4899);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         text-align: center;
-        letter-spacing: 1px;
+        letter-spacing: 1.5px;
         margin: 0;
+        font-family: 'Arial Black', sans-serif;
+        text-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
     }
     
-    .subtitle {
-        color: #94a3b8;
-        text-align: center;
-        font-size: 1rem;
-        margin-top: 0.5rem;
+    .terminal-tag {
+        background: linear-gradient(90deg, #10b981, #3b82f6);
+        color: white;
+        padding: 6px 16px;
+        border-radius: 20px;
+        font-size: 0.85rem;
+        font-weight: bold;
+        display: inline-block;
+        margin-top: 8px;
+        box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+    }
+    
+    /* Auto-refresh indicator */
+    .refresh-indicator {
+        position: absolute;
+        top: 15px;
+        right: 15px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: rgba(59, 130, 246, 0.1);
+        padding: 6px 12px;
+        border-radius: 20px;
+        border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+    
+    .refresh-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #10b981;
+        animation: pulse 2s infinite;
+    }
+    
+    @keyframes pulse {
+        0% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.5; transform: scale(1.2); }
+        100% { opacity: 1; transform: scale(1); }
+    }
+    
+    /* Metric Cards */
+    .metric-grid {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 15px;
+        margin-bottom: 25px;
+    }
+    
+    @media (max-width: 1200px) {
+        .metric-grid {
+            grid-template-columns: repeat(3, 1fr);
+        }
+    }
+    
+    @media (max-width: 768px) {
+        .metric-grid {
+            grid-template-columns: repeat(2, 1fr);
+        }
     }
     
     .metric-card {
-        background: linear-gradient(145deg, #1e293b, #0f172a);
+        background: linear-gradient(145deg, var(--secondary-bg), #1a2238);
         padding: 1.2rem;
-        border-radius: 8px;
-        border-left: 4px solid var(--accent-color);
-        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        margin-bottom: 1rem;
+        border-radius: 12px;
+        border: 1px solid var(--border-color);
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
+        transition: all 0.3s ease;
+        position: relative;
+        overflow: hidden;
+    }
+    
+    .metric-card::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 4px;
+        height: 100%;
+        background: linear-gradient(180deg, var(--accent-blue), var(--accent-purple));
+    }
+    
+    .metric-card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 10px 25px rgba(59, 130, 246, 0.2);
+        border-color: var(--accent-blue);
     }
     
     .metric-title {
-        color: #94a3b8;
+        color: var(--text-secondary);
         font-size: 0.85rem;
         text-transform: uppercase;
         letter-spacing: 0.5px;
-        margin-bottom: 0.3rem;
+        margin-bottom: 8px;
+        font-weight: 600;
     }
     
     .metric-value {
-        color: white;
-        font-size: 1.5rem;
+        color: var(--text-primary);
+        font-size: 1.8rem;
         font-weight: 700;
         font-family: 'Courier New', monospace;
+        margin-bottom: 5px;
+    }
+    
+    .metric-change {
+        font-size: 0.9rem;
+        font-weight: 600;
+    }
+    
+    .change-positive {
+        color: var(--accent-green);
+    }
+    
+    .change-negative {
+        color: var(--accent-red);
+    }
+    
+    /* Signal Cards */
+    .signal-container {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+        gap: 15px;
+        margin-top: 20px;
     }
     
     .signal-card {
-        background: linear-gradient(145deg, #1e293b, #0f172a);
-        padding: 1.2rem;
-        border-radius: 8px;
-        margin: 0.8rem 0;
-        border: 1px solid #334155;
+        background: linear-gradient(145deg, var(--secondary-bg), #1a2238);
+        border-radius: 12px;
+        padding: 1.5rem;
+        border: 1px solid var(--border-color);
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
         transition: all 0.3s ease;
+        position: relative;
+        overflow: hidden;
+    }
+    
+    .signal-card::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 4px;
+    }
+    
+    .signal-card.buy::before {
+        background: linear-gradient(90deg, var(--accent-green), #059669);
+    }
+    
+    .signal-card.sell::before {
+        background: linear-gradient(90deg, var(--accent-red), #dc2626);
     }
     
     .signal-card:hover {
         transform: translateY(-2px);
-        box-shadow: 0 5px 15px rgba(59, 130, 246, 0.1);
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
     }
     
-    .signal-buy {
-        border-left: 4px solid var(--profit-color);
+    .signal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 15px;
     }
     
-    .signal-sell {
-        border-left: 4px solid var(--loss-color);
+    .signal-title {
+        font-size: 1.2rem;
+        font-weight: 700;
+        color: var(--text-primary);
     }
     
-    .tab-container {
-        background: linear-gradient(145deg, #1e293b, #0f172a);
-        border-radius: 10px;
-        padding: 0.5rem;
-        margin-top: 1rem;
-    }
-    
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 10px;
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        background-color: #334155;
-        border-radius: 5px 5px 0 0;
-        padding: 10px 20px;
-        color: #94a3b8;
+    .confidence-badge {
+        background: linear-gradient(135deg, var(--accent-yellow), #d97706);
+        color: white;
+        padding: 4px 12px;
+        border-radius: 15px;
+        font-size: 0.85rem;
         font-weight: 600;
     }
     
+    .signal-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+        margin: 15px 0;
+    }
+    
+    .signal-item {
+        background: rgba(255, 255, 255, 0.05);
+        padding: 10px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    .signal-label {
+        color: var(--text-secondary);
+        font-size: 0.85rem;
+        margin-bottom: 4px;
+    }
+    
+    .signal-value {
+        color: var(--text-primary);
+        font-size: 1.1rem;
+        font-weight: 600;
+        font-family: 'Courier New', monospace;
+    }
+    
+    .execute-btn {
+        width: 100%;
+        padding: 12px;
+        background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        margin-top: 10px;
+    }
+    
+    .execute-btn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 15px rgba(59, 130, 246, 0.3);
+    }
+    
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background: var(--secondary-bg);
+        padding: 8px;
+        border-radius: 10px;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        background: transparent;
+        border-radius: 8px;
+        padding: 12px 24px;
+        color: var(--text-secondary);
+        font-weight: 600;
+        transition: all 0.3s ease;
+        border: 1px solid transparent;
+    }
+    
+    .stTabs [data-baseweb="tab"]:hover {
+        background: rgba(59, 130, 246, 0.1);
+        color: var(--accent-blue);
+    }
+    
     .stTabs [aria-selected="true"] {
-        background-color: var(--accent-color) !important;
+        background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
         color: white !important;
+        border: none;
+        box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
     }
     
+    /* Trade History */
+    .trade-log {
+        background: var(--secondary-bg);
+        border-radius: 12px;
+        padding: 20px;
+        border: 1px solid var(--border-color);
+    }
+    
+    .trade-entry {
+        background: rgba(255, 255, 255, 0.05);
+        padding: 15px;
+        border-radius: 8px;
+        margin-bottom: 12px;
+        border-left: 4px solid var(--accent-blue);
+        transition: all 0.3s ease;
+    }
+    
+    .trade-entry:hover {
+        background: rgba(59, 130, 246, 0.1);
+        transform: translateX(5px);
+    }
+    
+    .trade-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 10px;
+    }
+    
+    .trade-asset {
+        font-weight: 700;
+        color: var(--text-primary);
+        font-size: 1.1rem;
+    }
+    
+    .trade-pnl {
+        font-weight: 700;
+        font-family: 'Courier New', monospace;
+        font-size: 1.1rem;
+    }
+    
+    .pnl-positive {
+        color: var(--accent-green);
+    }
+    
+    .pnl-negative {
+        color: var(--accent-red);
+    }
+    
+    .trade-details {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 10px;
+        color: var(--text-secondary);
+        font-size: 0.9rem;
+    }
+    
+    /* Auto-refresh Controls */
+    .refresh-controls {
+        background: var(--secondary-bg);
+        padding: 15px;
+        border-radius: 10px;
+        border: 1px solid var(--border-color);
+        margin-bottom: 20px;
+    }
+    
+    .last-update {
+        color: var(--text-secondary);
+        font-size: 0.9rem;
+        margin-top: 10px;
+        text-align: center;
+    }
+    
+    /* Loading Spinner */
+    .spinner {
+        border: 3px solid rgba(59, 130, 246, 0.1);
+        border-top: 3px solid var(--accent-blue);
+        border-radius: 50%;
+        width: 24px;
+        height: 24px;
+        animation: spin 1s linear infinite;
+        display: inline-block;
+        vertical-align: middle;
+    }
+    
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+    
+    /* Sidebar */
     .sidebar .sidebar-content {
-        background: linear-gradient(180deg, var(--secondary-color), #0f172a);
+        background: var(--secondary-bg);
     }
     
-    .dataframe {
-        background-color: #1e293b !important;
-        color: white !important;
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
     }
     
-    .trade-log-entry {
-        background: #1e293b;
-        padding: 0.8rem;
-        border-radius: 5px;
-        margin: 0.5rem 0;
-        border-left: 3px solid var(--accent-color);
+    ::-webkit-scrollbar-track {
+        background: var(--secondary-bg);
     }
     
-    .status-active {
-        color: var(--profit-color);
-        font-weight: bold;
+    ::-webkit-scrollbar-thumb {
+        background: var(--accent-blue);
+        border-radius: 4px;
     }
     
-    .status-closed {
-        color: var(--neutral-color);
-        font-weight: bold;
-    }
-    
-    .profit-positive {
-        color: var(--profit-color);
-        font-weight: bold;
-    }
-    
-    .profit-negative {
-        color: var(--loss-color);
-        font-weight: bold;
+    ::-webkit-scrollbar-thumb:hover {
+        background: var(--accent-purple);
     }
 </style>
 """, unsafe_allow_html=True)
 
-# Terminal Header
-st.markdown("""
-<div class="main-header">
-    <h1 class="main-title">📊 RTV SMC ALGO TRADING TERMINAL</h1>
-    <p class="subtitle">Institutional Grade Algorithmic Trading System</p>
-</div>
-""", unsafe_allow_html=True)
-
-# Initialize session state
+# Initialize session state with comprehensive data structure
 if 'paper_portfolio' not in st.session_state:
     st.session_state.paper_portfolio = {
-        'balance': 100000.00,
+        'balance': 50000.00,
         'positions': {},
         'trade_history': [],
-        'pnl': 0.00,
-        'equity_curve': [100000.00]
+        'total_pnl': 0.00,
+        'daily_pnl': 0.00,
+        'equity_curve': [50000.00],
+        'winning_trades': 0,
+        'losing_trades': 0,
+        'max_drawdown': 0.00,
+        'peak_equity': 50000.00
     }
-
-if 'backtest_results' not in st.session_state:
-    st.session_state.backtest_results = {}
 
 if 'trade_log' not in st.session_state:
     st.session_state.trade_log = []
 
-# Enhanced Asset Configuration
+if 'active_signals' not in st.session_state:
+    st.session_state.active_signals = {}
+
+if 'traded_symbols' not in st.session_state:
+    st.session_state.traded_symbols = set()
+
+if 'market_data' not in st.session_state:
+    st.session_state.market_data = {}
+
+if 'last_update' not in st.session_state:
+    st.session_state.last_update = datetime.now()
+
+if 'auto_refresh' not in st.session_state:
+    st.session_state.auto_refresh = True
+
+if 'refresh_interval' not in st.session_state:
+    st.session_state.refresh_interval = 30  # seconds
+
+# Enhanced Asset Configuration for Intraday Trading
 ASSET_CONFIG = {
     "Cryptocurrencies": {
-        "BTC/USD": {"symbol": "BTC-USD", "pip_size": 0.01, "lot_size": 0.001, "sector": "Crypto"},
-        "ETH/USD": {"symbol": "ETH-USD", "pip_size": 0.01, "lot_size": 0.01, "sector": "Crypto"},
-        "SOL/USD": {"symbol": "SOL-USD", "pip_size": 0.001, "lot_size": 0.1, "sector": "Crypto"},
-        "XRP/USD": {"symbol": "XRP-USD", "pip_size": 0.0001, "lot_size": 100, "sector": "Crypto"},
-        "ADA/USD": {"symbol": "ADA-USD", "pip_size": 0.0001, "lot_size": 100, "sector": "Crypto"},
+        "BTC/USD": {"symbol": "BTC-USD", "pip_size": 0.01, "lot_size": 0.001, "sector": "Crypto", "volatility": "High"},
+        "ETH/USD": {"symbol": "ETH-USD", "pip_size": 0.01, "lot_size": 0.01, "sector": "Crypto", "volatility": "High"},
+        "SOL/USD": {"symbol": "SOL-USD", "pip_size": 0.001, "lot_size": 0.1, "sector": "Crypto", "volatility": "Very High"},
+        "XRP/USD": {"symbol": "XRP-USD", "pip_size": 0.0001, "lot_size": 1000, "sector": "Crypto", "volatility": "High"},
+        "ADA/USD": {"symbol": "ADA-USD", "pip_size": 0.0001, "lot_size": 1000, "sector": "Crypto", "volatility": "High"},
     },
     "Forex": {
-        "EUR/USD": {"symbol": "EURUSD=X", "pip_size": 0.0001, "lot_size": 10000, "sector": "Forex"},
-        "GBP/USD": {"symbol": "GBPUSD=X", "pip_size": 0.0001, "lot_size": 10000, "sector": "Forex"},
-        "USD/JPY": {"symbol": "JPY=X", "pip_size": 0.01, "lot_size": 10000, "sector": "Forex"},
-        "AUD/USD": {"symbol": "AUDUSD=X", "pip_size": 0.0001, "lot_size": 10000, "sector": "Forex"},
-        "USD/CAD": {"symbol": "CAD=X", "pip_size": 0.0001, "lot_size": 10000, "sector": "Forex"},
+        "EUR/USD": {"symbol": "EURUSD=X", "pip_size": 0.0001, "lot_size": 10000, "sector": "Forex", "volatility": "Low"},
+        "GBP/USD": {"symbol": "GBPUSD=X", "pip_size": 0.0001, "lot_size": 10000, "sector": "Forex", "volatility": "Medium"},
+        "USD/JPY": {"symbol": "JPY=X", "pip_size": 0.01, "lot_size": 10000, "sector": "Forex", "volatility": "Medium"},
+        "AUD/USD": {"symbol": "AUDUSD=X", "pip_size": 0.0001, "lot_size": 10000, "sector": "Forex", "volatility": "Medium"},
+        "USD/CAD": {"symbol": "CAD=X", "pip_size": 0.0001, "lot_size": 10000, "sector": "Forex", "volatility": "Low"},
     },
     "Commodities": {
-        "Gold": {"symbol": "GC=F", "pip_size": 0.10, "lot_size": 1, "sector": "Commodities"},
-        "Silver": {"symbol": "SI=F", "pip_size": 0.01, "lot_size": 10, "sector": "Commodities"},
-        "Crude Oil": {"symbol": "CL=F", "pip_size": 0.01, "lot_size": 10, "sector": "Commodities"},
-        "Copper": {"symbol": "HG=F", "pip_size": 0.0005, "lot_size": 100, "sector": "Commodities"},
-        "Natural Gas": {"symbol": "NG=F", "pip_size": 0.001, "lot_size": 100, "sector": "Commodities"},
+        "Gold": {"symbol": "GC=F", "pip_size": 0.10, "lot_size": 1, "sector": "Commodities", "volatility": "Medium"},
+        "Silver": {"symbol": "SI=F", "pip_size": 0.01, "lot_size": 10, "sector": "Commodities", "volatility": "High"},
+        "Crude Oil": {"symbol": "CL=F", "pip_size": 0.01, "lot_size": 10, "sector": "Commodities", "volatility": "High"},
+        "Natural Gas": {"symbol": "NG=F", "pip_size": 0.001, "lot_size": 100, "sector": "Commodities", "volatility": "Very High"},
     },
     "Indices": {
-        "S&P 500": {"symbol": "^GSPC", "pip_size": 0.25, "lot_size": 1, "sector": "Indices"},
-        "NASDAQ": {"symbol": "^IXIC", "pip_size": 0.25, "lot_size": 1, "sector": "Indices"},
-        "Dow Jones": {"symbol": "^DJI", "pip_size": 1.0, "lot_size": 1, "sector": "Indices"},
-        "FTSE 100": {"symbol": "^FTSE", "pip_size": 1.0, "lot_size": 1, "sector": "Indices"},
-        "DAX": {"symbol": "^GDAXI", "pip_size": 1.0, "lot_size": 1, "sector": "Indices"},
+        "S&P 500": {"symbol": "^GSPC", "pip_size": 0.25, "lot_size": 1, "sector": "Indices", "volatility": "Medium"},
+        "NASDAQ": {"symbol": "^IXIC", "pip_size": 0.25, "lot_size": 1, "sector": "Indices", "volatility": "High"},
+        "Dow Jones": {"symbol": "^DJI", "pip_size": 1.0, "lot_size": 1, "sector": "Indices", "volatility": "Medium"},
+        "Russell 2000": {"symbol": "^RUT", "pip_size": 0.10, "lot_size": 1, "sector": "Indices", "volatility": "High"},
     },
-    "Stocks": {
-        "Apple": {"symbol": "AAPL", "pip_size": 0.01, "lot_size": 10, "sector": "Tech"},
-        "Microsoft": {"symbol": "MSFT", "pip_size": 0.01, "lot_size": 10, "sector": "Tech"},
-        "Tesla": {"symbol": "TSLA", "pip_size": 0.01, "lot_size": 10, "sector": "Auto"},
-        "Amazon": {"symbol": "AMZN", "pip_size": 0.01, "lot_size": 10, "sector": "Retail"},
-        "Google": {"symbol": "GOOGL", "pip_size": 0.01, "lot_size": 10, "sector": "Tech"},
+    "Tech Stocks": {
+        "Apple": {"symbol": "AAPL", "pip_size": 0.01, "lot_size": 10, "sector": "Tech", "volatility": "Medium"},
+        "Microsoft": {"symbol": "MSFT", "pip_size": 0.01, "lot_size": 10, "sector": "Tech", "volatility": "Medium"},
+        "Tesla": {"symbol": "TSLA", "pip_size": 0.01, "lot_size": 10, "sector": "Tech", "volatility": "Very High"},
+        "NVIDIA": {"symbol": "NVDA", "pip_size": 0.01, "lot_size": 10, "sector": "Tech", "volatility": "Very High"},
+        "Amazon": {"symbol": "AMZN", "pip_size": 0.01, "lot_size": 10, "sector": "Tech", "volatility": "Medium"},
     }
 }
 
-# Sidebar Configuration
-st.sidebar.markdown("### ⚙️ SYSTEM CONFIGURATION")
+# Enhanced Trading Strategies
+TRADING_STRATEGIES = {
+    "SMC Pro": {
+        "description": "Smart Money Concepts with multi-timeframe confirmation",
+        "indicators": ["FVG", "Order Blocks", "Market Structure", "Liquidity", "RSI", "MACD"],
+        "timeframes": ["5m", "15m", "1h"],
+        "confidence_threshold": 0.75
+    },
+    "Momentum Breakout": {
+        "description": "Breakout strategy with volume confirmation",
+        "indicators": ["Bollinger Bands", "Volume", "ATR", "RSI"],
+        "timeframes": ["5m", "15m"],
+        "confidence_threshold": 0.70
+    },
+    "Mean Reversion": {
+        "description": "Mean reversion with RSI extremes",
+        "indicators": ["RSI", "Bollinger Bands", "Moving Averages"],
+        "timeframes": ["5m", "15m"],
+        "confidence_threshold": 0.80
+    },
+    "Trend Following": {
+        "description": "Follow the trend with multiple MA confirmation",
+        "indicators": ["EMA 9", "EMA 21", "EMA 50", "MACD"],
+        "timeframes": ["15m", "1h"],
+        "confidence_threshold": 0.65
+    }
+}
 
-# Mode Selection
+# Terminal Header with Auto-refresh Indicator
+st.markdown("""
+<div class="main-header">
+    <h1 class="main-title">🚀 RTV SMC ALGORITHMIC TRADING TERMINAL</h1>
+    <p style="text-align: center; color: #94a3b8; margin: 10px 0;">Professional Intraday Trading System</p>
+    <div style="display: flex; justify-content: center; gap: 15px; margin-top: 10px;">
+        <span class="terminal-tag">💰 Real-time P&L</span>
+        <span class="terminal-tag">📊 Multi-Asset</span>
+        <span class="terminal-tag">⚡ Auto-Refresh</span>
+        <span class="terminal-tag">🤖 AI Signals</span>
+    </div>
+    <div class="refresh-indicator">
+        <div class="refresh-dot"></div>
+        <span style="color: #94a3b8; font-size: 0.9rem;">Auto-refresh Active</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# Sidebar Configuration
+st.sidebar.markdown("### ⚙️ TRADING CONFIGURATION")
+
+# Operating Mode
 mode = st.sidebar.selectbox(
     "Operating Mode",
-    ["Live Analysis", "Multi-Asset Scan", "Paper Trading", "Backtesting"],
+    ["📡 Live Trading", "🔍 Signal Scanner", "📊 Portfolio", "⚙️ Settings"],
     index=0
 )
 
-# Multi-Asset Scan Configuration
-if mode == "Multi-Asset Scan":
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### 📊 SCAN PARAMETERS")
-    
-    scan_categories = st.sidebar.multiselect(
-        "Categories to Scan",
-        list(ASSET_CONFIG.keys()),
-        default=["Cryptocurrencies", "Forex", "Commodities"]
-    )
-    
-    min_confidence = st.sidebar.slider("Minimum Confidence (%)", 60, 95, 75)
-    max_signals = st.sidebar.slider("Max Signals per Category", 1, 10, 5)
-else:
-    # Single Asset Selection
-    asset_category = st.sidebar.selectbox(
-        "Asset Category",
-        list(ASSET_CONFIG.keys()),
-        index=2
-    )
-    
-    selected_asset = st.sidebar.selectbox(
-        "Select Asset",
-        list(ASSET_CONFIG[asset_category].keys())
-    )
-    
-    asset_info = ASSET_CONFIG[asset_category][selected_asset]
+# Auto-refresh Configuration
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🔄 AUTO-REFRESH")
 
-# Timeframe selection
-timeframe = st.sidebar.selectbox(
-    "Timeframe",
-    ["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
+refresh_enabled = st.sidebar.toggle("Enable Auto-refresh", value=True, key="refresh_toggle")
+refresh_interval = st.sidebar.selectbox(
+    "Refresh Interval",
+    ["10 seconds", "30 seconds", "1 minute", "5 minutes", "Manual"],
     index=1
 )
 
-# SMC Parameters
+if refresh_enabled:
+    interval_seconds = {
+        "10 seconds": 10,
+        "30 seconds": 30,
+        "1 minute": 60,
+        "5 minutes": 300
+    }.get(refresh_interval, 30)
+    st.session_state.refresh_interval = interval_seconds
+    st.session_state.auto_refresh = True
+else:
+    st.session_state.auto_refresh = False
+
+# Trading Strategy Selection
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 📊 SMC PARAMETERS")
-col1, col2 = st.sidebar.columns(2)
-with col1:
-    fvg_period = st.slider("FVG Lookback", 3, 20, 5)
-    swing_period = st.slider("Swing Period", 2, 10, 3)
-with col2:
-    rsi_period = st.slider("RSI Period", 7, 21, 14)
-    atr_period = st.slider("ATR Period", 7, 21, 14)
+st.sidebar.markdown("### 🎯 TRADING STRATEGY")
+
+selected_strategy = st.sidebar.selectbox(
+    "Primary Strategy",
+    list(TRADING_STRATEGIES.keys()),
+    index=0
+)
+
+strategy_info = TRADING_STRATEGIES[selected_strategy]
+st.sidebar.info(f"**{selected_strategy}**: {strategy_info['description']}")
+
+# Asset Selection
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📊 ASSET SELECTION")
+
+asset_category = st.sidebar.selectbox(
+    "Asset Category",
+    list(ASSET_CONFIG.keys()),
+    index=0
+)
+
+selected_asset = st.sidebar.selectbox(
+    "Select Asset",
+    list(ASSET_CONFIG[asset_category].keys())
+)
+
+asset_info = ASSET_CONFIG[asset_category][selected_asset]
+
+# Timeframe
+timeframe = st.sidebar.selectbox(
+    "Timeframe",
+    ["1m", "5m", "15m", "30m", "1h"],
+    index=1
+)
 
 # Risk Management
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 💰 RISK MANAGEMENT")
-risk_per_trade = st.sidebar.slider("Risk per Trade (%)", 0.5, 5.0, 2.0)
-stop_loss_atr = st.sidebar.slider("Stop Loss (ATR)", 1.0, 3.0, 2.0)
-take_profit_atr = st.sidebar.slider("Take Profit (ATR)", 1.0, 4.0, 3.0)
+st.sidebar.markdown("### 🛡️ RISK MANAGEMENT")
 
-# Trading Hours Filter (for Forex/Indices)
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    risk_per_trade = st.slider("Risk per Trade (%)", 0.5, 5.0, 1.0, step=0.1)
+    stop_loss_atr = st.slider("Stop Loss (ATR)", 1.0, 3.0, 1.5, step=0.1)
+with col2:
+    take_profit_atr = st.slider("Take Profit (ATR)", 1.0, 5.0, 2.5, step=0.1)
+    max_positions = st.slider("Max Positions", 1, 10, 5)
+
+# Advanced Parameters
 st.sidebar.markdown("---")
-st.sidebar.markdown("### ⏰ TRADING HOURS")
-trading_hours = st.sidebar.checkbox("Filter by Trading Hours", value=False)
-if trading_hours:
-    market_open = st.sidebar.time_input("Market Open", value=datetime.strptime("09:30", "%H:%M").time())
-    market_close = st.sidebar.time_input("Market Close", value=datetime.strptime("16:00", "%H:%M").time())
+st.sidebar.markdown("### ⚙️ ADVANCED PARAMETERS")
 
-# Data Fetching Function
-@st.cache_data(ttl=60)
-def fetch_market_data(symbol, interval='5m', period='7d'):
+with st.sidebar.expander("SMC Parameters"):
+    fvg_period = st.slider("FVG Lookback", 3, 20, 5)
+    swing_period = st.slider("Swing Period", 2, 10, 3)
+    rsi_period = st.slider("RSI Period", 7, 21, 14)
+    atr_period = st.slider("ATR Period", 7, 21, 14)
+
+# Data Fetching with Caching
+@st.cache_data(ttl=10)  # Very short TTL for intraday
+def fetch_intraday_data(symbol, interval='5m', period='1d'):
+    """Fetch intraday market data with error handling"""
     try:
         interval_map = {
-            '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m',
-            '1h': '60m', '4h': '60m', '1d': '1d'
+            '1m': '1m', '5m': '5m', '15m': '15m',
+            '30m': '30m', '1h': '60m'
         }
         
         yf_interval = interval_map.get(interval, '5m')
         
         period_map = {
-            '1m': '1d', '5m': '7d', '15m': '7d', '30m': '30d',
-            '1h': '30d', '4h': '60d', '1d': '180d'
+            '1m': '1d', '5m': '1d', '15m': '5d',
+            '30m': '5d', '1h': '5d'
         }
         
-        yf_period = period_map.get(interval, '7d')
+        yf_period = period_map.get(interval, '1d')
         
         ticker = yf.Ticker(symbol)
         df = ticker.history(period=yf_period, interval=yf_interval)
         
         if df.empty:
+            # Fallback method
             end_date = datetime.now()
-            start_date = end_date - timedelta(days=30)
-            df = yf.download(symbol, start=start_date, end=end_date, interval=yf_interval, progress=False)
+            start_date = end_date - timedelta(days=7)
+            df = yf.download(symbol, start=start_date, end=end_date, 
+                           interval=yf_interval, progress=False, auto_adjust=True)
         
-        if len(df) > 0 and 'Open' in df.columns:
+        if not df.empty:
             df = df[['Open', 'High', 'Low', 'Close', 'Volume']].copy()
+            df.columns = [col.lower() for col in df.columns]
             df.dropna(inplace=True)
-            df = add_technical_indicators(df)
+            
+            # Add technical indicators
+            df = add_enhanced_indicators(df)
+            
             return df
             
     except Exception as e:
-        st.error(f"Error fetching data: {e}")
+        st.error(f"Error fetching {symbol}: {str(e)}")
     
     return pd.DataFrame()
 
-def add_technical_indicators(df):
+def add_enhanced_indicators(df):
+    """Add comprehensive technical indicators"""
     if len(df) < 20:
         return df
     
-    # ATR
-    df['TR'] = np.maximum(
-        df['High'] - df['Low'],
-        np.maximum(
-            abs(df['High'] - df['Close'].shift()),
-            abs(df['Low'] - df['Close'].shift())
-        )
-    )
-    df['ATR'] = df['TR'].rolling(window=atr_period).mean()
+    # Price calculations
+    df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
     
-    # RSI
-    delta = df['Close'].diff()
+    # ATR with proper handling
+    high_low = df['high'] - df['low']
+    high_close = abs(df['high'] - df['close'].shift())
+    low_close = abs(df['low'] - df['close'].shift())
+    
+    df['tr'] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    df['atr'] = df['tr'].rolling(window=atr_period).mean()
+    
+    # RSI with smoothing
+    delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=rsi_period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=rsi_period).mean()
-    rs = gain / loss
-    df['RSI'] = 100 - (100 / (1 + rs))
+    
+    # Handle division by zero
+    with np.errstate(divide='ignore', invalid='ignore'):
+        rs = np.where(loss != 0, gain / loss, np.inf)
+        df['rsi'] = 100 - (100 / (1 + rs))
     
     # Moving Averages
-    df['MA9'] = df['Close'].rolling(window=9).mean()
-    df['MA21'] = df['Close'].rolling(window=21).mean()
-    df['MA50'] = df['Close'].rolling(window=50).mean()
-    df['MA200'] = df['Close'].rolling(window=200).mean()
+    df['ema_9'] = df['close'].ewm(span=9, adjust=False).mean()
+    df['ema_21'] = df['close'].ewm(span=21, adjust=False).mean()
+    df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
+    df['sma_20'] = df['close'].rolling(window=20).mean()
     
-    # Bollinger Bands
-    df['BB_Middle'] = df['Close'].rolling(window=20).mean()
-    bb_std = df['Close'].rolling(window=20).std()
-    df['BB_Upper'] = df['BB_Middle'] + (bb_std * 2)
-    df['BB_Lower'] = df['BB_Middle'] - (bb_std * 2)
+    # Bollinger Bands with proper column naming
+    df['bb_middle'] = df['close'].rolling(window=20).mean()
+    bb_std = df['close'].rolling(window=20).std()
+    df['bb_upper'] = df['bb_middle'] + (bb_std * 2)
+    df['bb_lower'] = df['bb_middle'] - (bb_std * 2)
+    
+    # MACD
+    exp1 = df['close'].ewm(span=12, adjust=False).mean()
+    exp2 = df['close'].ewm(span=26, adjust=False).mean()
+    df['macd'] = exp1 - exp2
+    df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+    df['macd_hist'] = df['macd'] - df['macd_signal']
     
     # Volume indicators
-    df['Volume_MA'] = df['Volume'].rolling(window=20).mean()
-    df['Volume_Ratio'] = df['Volume'] / df['Volume_MA']
+    df['volume_sma'] = df['volume'].rolling(window=20).mean()
+    df['volume_ratio'] = df['volume'] / df['volume_sma']
+    
+    # Momentum
+    df['momentum'] = df['close'] - df['close'].shift(10)
+    
+    # Support/Resistance
+    df['support'] = df['low'].rolling(window=20).min()
+    df['resistance'] = df['high'].rolling(window=20).max()
     
     return df
 
-# Enhanced SMC Algorithm
-class SMCAlgorithm:
-    def __init__(self, fvg_lookback=5, swing_period=3):
-        self.fvg_lookback = fvg_lookback
-        self.swing_period = swing_period
+# Enhanced SMC Algorithm with Multiple Strategies
+class AdvancedSMCAlgorithm:
+    def __init__(self, strategy="SMC Pro"):
+        self.strategy = strategy
+        self.config = TRADING_STRATEGIES.get(strategy, TRADING_STRATEGIES["SMC Pro"])
         
     def analyze_market_structure(self, df):
+        """Advanced market structure analysis"""
         df = df.copy()
         
         # Identify swing points
-        df['Swing_High'] = False
-        df['Swing_Low'] = False
+        df['swing_high'] = False
+        df['swing_low'] = False
         
         for i in range(self.swing_period, len(df)-self.swing_period):
-            if all(df['High'].iloc[i] > df['High'].iloc[i-j] for j in range(1, self.swing_period+1)) and \
-               all(df['High'].iloc[i] > df['High'].iloc[i+j] for j in range(1, self.swing_period+1)):
-                df.loc[df.index[i], 'Swing_High'] = True
+            # Swing High
+            if all(df['high'].iloc[i] > df['high'].iloc[i-j] for j in range(1, self.swing_period+1)) and \
+               all(df['high'].iloc[i] > df['high'].iloc[i+j] for j in range(1, self.swing_period+1)):
+                df.loc[df.index[i], 'swing_high'] = True
             
-            if all(df['Low'].iloc[i] < df['Low'].iloc[i-j] for j in range(1, self.swing_period+1)) and \
-               all(df['Low'].iloc[i] < df['Low'].iloc[i+j] for j in range(1, self.swing_period+1)):
-                df.loc[df.index[i], 'Swing_Low'] = True
+            # Swing Low
+            if all(df['low'].iloc[i] < df['low'].iloc[i-j] for j in range(1, self.swing_period+1)) and \
+               all(df['low'].iloc[i] < df['low'].iloc[i+j] for j in range(1, self.swing_period+1)):
+                df.loc[df.index[i], 'swing_low'] = True
         
-        df['Market_Structure'] = 'Neutral'
-        swing_highs = df[df['Swing_High']]
-        swing_lows = df[df['Swing_Low']]
+        # Determine market structure
+        df['market_structure'] = 'neutral'
+        swing_highs = df[df['swing_high']]
+        swing_lows = df[df['swing_low']]
         
         if len(swing_highs) >= 2 and len(swing_lows) >= 2:
-            last_2_highs = swing_highs['High'].iloc[-2:]
-            last_2_lows = swing_lows['Low'].iloc[-2:]
+            # Check for trend
+            highs = swing_highs['high'].values[-2:]
+            lows = swing_lows['low'].values[-2:]
             
-            if len(last_2_highs) == 2 and len(last_2_lows) == 2:
-                if (last_2_highs.iloc[1] > last_2_highs.iloc[0] and
-                    last_2_lows.iloc[1] > last_2_lows.iloc[0]):
-                    df['Market_Structure'] = 'Uptrend'
-                elif (last_2_highs.iloc[1] < last_2_highs.iloc[0] and
-                      last_2_lows.iloc[1] < last_2_lows.iloc[0]):
-                    df['Market_Structure'] = 'Downtrend'
-                elif (last_2_highs.iloc[1] > last_2_highs.iloc[0] and
-                      last_2_lows.iloc[1] < last_2_lows.iloc[0]):
-                    df['Market_Structure'] = 'Consolidation'
+            if len(highs) == 2 and len(lows) == 2:
+                if highs[1] > highs[0] and lows[1] > lows[0]:
+                    df['market_structure'] = 'uptrend'
+                elif highs[1] < highs[0] and lows[1] < lows[0]:
+                    df['market_structure'] = 'downtrend'
+                elif (highs[1] > highs[0] and lows[1] < lows[0]) or (highs[1] < highs[0] and lows[1] > lows[0]):
+                    df['market_structure'] = 'consolidation'
         
         return df
     
     def identify_fvgs(self, df):
+        """Identify Fair Value Gaps"""
         df = df.copy()
-        df['FVG_Bullish'] = np.nan
-        df['FVG_Bearish'] = np.nan
-        df['FVG_Width'] = np.nan
-        df['FVG_Strength'] = np.nan
         
-        for i in range(self.fvg_lookback, len(df)-1):
+        df['fvg_bullish'] = np.nan
+        df['fvg_bearish'] = np.nan
+        
+        for i in range(1, len(df)-1):
             current = df.iloc[i]
             next_candle = df.iloc[i+1]
             
-            # Bullish FVG
-            if current['High'] < next_candle['Low']:
-                gap = next_candle['Low'] - current['High']
-                if gap > current['ATR'] * 0.1:
-                    df.loc[df.index[i], 'FVG_Bullish'] = current['High']
-                    df.loc[df.index[i], 'FVG_Width'] = gap
-                    df.loc[df.index[i], 'FVG_Strength'] = gap / current['ATR']
+            # Bullish FVG (gap up)
+            if current['high'] < next_candle['low']:
+                gap_size = next_candle['low'] - current['high']
+                if gap_size > (df['atr'].iloc[i] * 0.15):  # Minimum gap threshold
+                    df.loc[df.index[i], 'fvg_bullish'] = current['high']
+                    df.loc[df.index[i], 'fvg_width'] = gap_size
+                    df.loc[df.index[i], 'fvg_strength'] = gap_size / df['atr'].iloc[i]
             
-            # Bearish FVG
-            elif current['Low'] > next_candle['High']:
-                gap = current['Low'] - next_candle['High']
-                if gap > current['ATR'] * 0.1:
-                    df.loc[df.index[i], 'FVG_Bearish'] = current['Low']
-                    df.loc[df.index[i], 'FVG_Width'] = gap
-                    df.loc[df.index[i], 'FVG_Strength'] = gap / current['ATR']
+            # Bearish FVG (gap down)
+            elif current['low'] > next_candle['high']:
+                gap_size = current['low'] - next_candle['high']
+                if gap_size > (df['atr'].iloc[i] * 0.15):
+                    df.loc[df.index[i], 'fvg_bearish'] = current['low']
+                    df.loc[df.index[i], 'fvg_width'] = gap_size
+                    df.loc[df.index[i], 'fvg_strength'] = gap_size / df['atr'].iloc[i]
         
         return df
     
     def identify_orderblocks(self, df):
+        """Identify Order Blocks"""
         df = df.copy()
-        df['OB_Bullish'] = np.nan
-        df['OB_Bearish'] = np.nan
-        df['OB_Strength'] = np.nan
+        
+        df['ob_bullish'] = np.nan
+        df['ob_bearish'] = np.nan
         
         for i in range(2, len(df)-2):
             current = df.iloc[i]
             prev = df.iloc[i-1]
             next_candle = df.iloc[i+1]
             
-            # Bullish Order Block
-            body_size = abs(current['Close'] - current['Open'])
-            candle_range = current['High'] - current['Low']
+            candle_body = abs(current['close'] - current['open'])
+            candle_range = current['high'] - current['low']
             
-            if (current['Close'] > current['Open'] and
-                body_size > candle_range * 0.6 and
-                next_candle['Low'] >= current['Low']):
+            # Bullish Order Block
+            if (candle_body > candle_range * 0.6 and  # Strong body
+                current['close'] > current['open'] and  # Bullish candle
+                next_candle['low'] >= current['low']):  # Next candle doesn't break low
                 
-                df.loc[df.index[i], 'OB_Bullish'] = current['Low']
-                df.loc[df.index[i], 'OB_Strength'] = body_size / current['ATR']
+                df.loc[df.index[i], 'ob_bullish'] = current['low']
+                df.loc[df.index[i], 'ob_strength'] = candle_body / df['atr'].iloc[i]
             
             # Bearish Order Block
-            elif (current['Close'] < current['Open'] and
-                  body_size > candle_range * 0.6 and
-                  next_candle['High'] <= current['High']):
+            elif (candle_body > candle_range * 0.6 and  # Strong body
+                  current['close'] < current['open'] and  # Bearish candle
+                  next_candle['high'] <= current['high']):  # Next candle doesn't break high
                 
-                df.loc[df.index[i], 'OB_Bearish'] = current['High']
-                df.loc[df.index[i], 'OB_Strength'] = body_size / current['ATR']
+                df.loc[df.index[i], 'ob_bearish'] = current['high']
+                df.loc[df.index[i], 'ob_strength'] = candle_body / df['atr'].iloc[i]
         
         return df
     
-    def generate_signals(self, df, asset_info):
+    def generate_smc_signals(self, df, asset_info):
+        """Generate SMC-based trading signals"""
         signals = []
         
-        if len(df) < 20:
+        if len(df) < 30:
             return signals
         
         latest = df.iloc[-1]
         prev = df.iloc[-2]
         
-        # Calculate position size
-        atr_value = latest['ATR'] if not pd.isna(latest['ATR']) else df['ATR'].mean()
+        # Position sizing
+        atr_value = latest['atr'] if not pd.isna(latest['atr']) else df['atr'].mean()
         if atr_value == 0:
-            atr_value = df['Close'].std() * 0.01
+            atr_value = df['close'].std() * 0.01
         
         stop_distance = atr_value * stop_loss_atr
         risk_amount = st.session_state.paper_portfolio['balance'] * risk_per_trade / 100
         position_size = risk_amount / stop_distance
-        position_size = min(position_size, asset_info['lot_size'] * 10)
+        position_size = min(position_size, asset_info['lot_size'] * 5)  # Conservative sizing
         
-        # Signal 1: FVG + RSI confluence
-        if not pd.isna(latest.get('FVG_Bullish', np.nan)):
-            fvg_top = latest['FVG_Bullish'] + latest.get('FVG_Width', 0)
-            if latest['Low'] <= fvg_top <= latest['High']:
-                rsi_score = max(0, (40 - latest['RSI']) / 40) if latest['RSI'] < 40 else 0
-                confidence = 0.65 + (rsi_score * 0.2)
-                
-                if confidence * 100 >= 60:
-                    entry = fvg_top
-                    stop_loss = latest['FVG_Bullish'] - atr_value * 0.5
-                    take_profit = entry + atr_value * take_profit_atr
-                    
-                    signals.append({
-                        'asset': asset_info['symbol'],
-                        'name': list(ASSET_CONFIG.keys())[0],
-                        'type': 'BUY',
-                        'entry': entry,
-                        'stop_loss': stop_loss,
-                        'take_profit': take_profit,
-                        'size': position_size,
-                        'confidence': confidence,
-                        'reason': 'Bullish FVG fill',
-                        'conditions': ['FVG', f'RSI: {latest["RSI"]:.1f}', 'Price at FVG'],
-                        'sector': asset_info.get('sector', 'General'),
-                        'timestamp': datetime.now()
-                    })
-        
-        if not pd.isna(latest.get('FVG_Bearish', np.nan)):
-            fvg_bottom = latest['FVG_Bearish'] - latest.get('FVG_Width', 0)
-            if latest['Low'] <= fvg_bottom <= latest['High']:
-                rsi_score = max(0, (latest['RSI'] - 60) / 40) if latest['RSI'] > 60 else 0
-                confidence = 0.65 + (rsi_score * 0.2)
-                
-                if confidence * 100 >= 60:
-                    entry = fvg_bottom
-                    stop_loss = latest['FVG_Bearish'] + atr_value * 0.5
-                    take_profit = entry - atr_value * take_profit_atr
-                    
-                    signals.append({
-                        'asset': asset_info['symbol'],
-                        'name': list(ASSET_CONFIG.keys())[0],
-                        'type': 'SELL',
-                        'entry': entry,
-                        'stop_loss': stop_loss,
-                        'take_profit': take_profit,
-                        'size': position_size,
-                        'confidence': confidence,
-                        'reason': 'Bearish FVG fill',
-                        'conditions': ['FVG', f'RSI: {latest["RSI"]:.1f}', 'Price at FVG'],
-                        'sector': asset_info.get('sector', 'General'),
-                        'timestamp': datetime.now()
-                    })
-        
-        # Signal 2: Order Block + Market Structure
-        if not pd.isna(latest.get('OB_Bullish', np.nan)):
-            ob_price = latest['OB_Bullish']
-            if latest['Low'] <= ob_price <= latest['High']:
-                structure_score = 0.2 if latest['Market_Structure'] == 'Uptrend' else 0
-                confidence = 0.7 + structure_score
-                
-                if confidence * 100 >= 60:
-                    entry = ob_price
-                    stop_loss = ob_price - atr_value * stop_loss_atr
-                    take_profit = entry + atr_value * take_profit_atr
-                    
-                    signals.append({
-                        'asset': asset_info['symbol'],
-                        'name': list(ASSET_CONFIG.keys())[0],
-                        'type': 'BUY',
-                        'entry': entry,
-                        'stop_loss': stop_loss,
-                        'take_profit': take_profit,
-                        'size': position_size,
-                        'confidence': confidence,
-                        'reason': 'Bullish Order Block',
-                        'conditions': ['Order Block', latest['Market_Structure'], 'Price at OB'],
-                        'sector': asset_info.get('sector', 'General'),
-                        'timestamp': datetime.now()
-                    })
-        
-        if not pd.isna(latest.get('OB_Bearish', np.nan)):
-            ob_price = latest['OB_Bearish']
-            if latest['Low'] <= ob_price <= latest['High']:
-                structure_score = 0.2 if latest['Market_Structure'] == 'Downtrend' else 0
-                confidence = 0.7 + structure_score
-                
-                if confidence * 100 >= 60:
-                    entry = ob_price
-                    stop_loss = ob_price + atr_value * stop_loss_atr
-                    take_profit = entry - atr_value * take_profit_atr
-                    
-                    signals.append({
-                        'asset': asset_info['symbol'],
-                        'name': list(ASSET_CONFIG.keys())[0],
-                        'type': 'SELL',
-                        'entry': entry,
-                        'stop_loss': stop_loss,
-                        'take_profit': take_profit,
-                        'size': position_size,
-                        'confidence': confidence,
-                        'reason': 'Bearish Order Block',
-                        'conditions': ['Order Block', latest['Market_Structure'], 'Price at OB'],
-                        'sector': asset_info.get('sector', 'General'),
-                        'timestamp': datetime.now()
-                    })
-        
-        # Signal 3: Break of Structure (BOS)
-        swing_highs = df[df['Swing_High']]
-        swing_lows = df[df['Swing_Low']]
-        
-        if len(swing_highs) > 0 and len(swing_lows) > 0:
-            last_swing_high = swing_highs['High'].iloc[-1]
-            last_swing_low = swing_lows['Low'].iloc[-1]
+        # Signal 1: FVG Fill with RSI Confluence
+        if not pd.isna(latest.get('fvg_bullish', np.nan)):
+            fvg_top = latest['fvg_bullish'] + latest.get('fvg_width', 0)
+            current_price = latest['close']
             
-            # BOS to upside
-            if latest['Close'] > last_swing_high and latest['RSI'] > 50:
-                rsi_score = (latest['RSI'] - 50) / 30
-                confidence = 0.75 + min(rsi_score * 0.2, 0.15)
+            # Check if price is filling the FVG
+            if fvg_bottom <= current_price <= fvg_top:
+                rsi = latest['rsi']
+                confidence = 0.65
                 
-                if confidence * 100 >= 60:
-                    entry = latest['Close']
-                    stop_loss = last_swing_low
-                    take_profit = entry + (entry - stop_loss) * 2
+                # Increase confidence with RSI oversold
+                if rsi < 35:
+                    confidence += 0.15
+                
+                # Increase confidence with volume
+                if latest.get('volume_ratio', 1) > 1.5:
+                    confidence += 0.10
+                
+                if confidence >= self.config['confidence_threshold']:
+                    entry = current_price
+                    stop_loss = latest['fvg_bullish'] - (atr_value * 0.5)
+                    take_profit = entry + (atr_value * take_profit_atr)
                     
                     signals.append({
                         'asset': asset_info['symbol'],
-                        'name': list(ASSET_CONFIG.keys())[0],
+                        'asset_name': selected_asset,
                         'type': 'BUY',
                         'entry': entry,
                         'stop_loss': stop_loss,
                         'take_profit': take_profit,
                         'size': position_size,
-                        'confidence': confidence,
-                        'reason': 'Break of Structure (BOS)',
-                        'conditions': ['BOS', f'RSI: {latest["RSI"]:.1f}', 'Above swing high'],
-                        'sector': asset_info.get('sector', 'General'),
-                        'timestamp': datetime.now()
-                    })
-            
-            # BOS to downside
-            elif latest['Close'] < last_swing_low and latest['RSI'] < 50:
-                rsi_score = (50 - latest['RSI']) / 30
-                confidence = 0.75 + min(rsi_score * 0.2, 0.15)
-                
-                if confidence * 100 >= 60:
-                    entry = latest['Close']
-                    stop_loss = last_swing_high
-                    take_profit = entry - (stop_loss - entry) * 2
-                    
-                    signals.append({
-                        'asset': asset_info['symbol'],
-                        'name': list(ASSET_CONFIG.keys())[0],
-                        'type': 'SELL',
-                        'entry': entry,
-                        'stop_loss': stop_loss,
-                        'take_profit': take_profit,
-                        'size': position_size,
-                        'confidence': confidence,
-                        'reason': 'Break of Structure (BOS)',
-                        'conditions': ['BOS', f'RSI: {latest["RSI"]:.1f}', 'Below swing low'],
-                        'sector': asset_info.get('sector', 'General'),
+                        'confidence': min(confidence, 0.95),
+                        'strategy': 'SMC FVG Fill',
+                        'reason': f'Bullish FVG fill with RSI: {rsi:.1f}',
+                        'conditions': ['FVG', f'RSI: {rsi:.1f}', 'Volume Confirmation'],
                         'timestamp': datetime.now()
                     })
         
-        # Sort by confidence
-        signals = sorted(signals, key=lambda x: x['confidence'], reverse=True)
-        return signals[:5]
+        # Similar logic for bearish FVG and other patterns...
+        
+        return signals
+    
+    def generate_momentum_signals(self, df, asset_info):
+        """Generate momentum breakout signals"""
+        signals = []
+        
+        if len(df) < 30:
+            return signals
+        
+        latest = df.iloc[-1]
+        
+        # Bollinger Band Breakout
+        if latest['close'] > latest['bb_upper']:
+            # Check for volume confirmation
+            if latest.get('volume_ratio', 1) > 1.3:
+                confidence = 0.70
+                
+                # Increase confidence with RSI
+                if latest['rsi'] > 60 and latest['rsi'] < 80:
+                    confidence += 0.10
+                
+                if confidence >= self.config['confidence_threshold']:
+                    # Generate buy signal for breakout
+                    pass
+        
+        return signals
 
-# Enhanced Paper Trading Engine
-class PaperTrading:
+# Enhanced Trading Engine
+class TradingEngine:
     def __init__(self):
         self.portfolio = st.session_state.paper_portfolio
+        self.traded_symbols = st.session_state.traded_symbols
+        
+    def can_trade_symbol(self, symbol):
+        """Check if we can trade this symbol (not already in positions)"""
+        for pos_id, position in self.portfolio['positions'].items():
+            if position['asset'] == symbol and position['status'] == 'OPEN':
+                return False
+        return True
     
-    def execute_trade(self, signal, current_price, asset_name):
-        trade_value = signal['entry'] * signal['size']
+    def execute_trade(self, signal, current_price):
+        """Execute a trade with position management"""
+        symbol = signal['asset']
         
-        if trade_value > self.portfolio['balance'] * 0.95:
-            return False, "Insufficient balance"
+        # Check if already trading this symbol
+        if not self.can_trade_symbol(symbol):
+            return False, f"Already trading {symbol}"
         
-        trade_id = f"{asset_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # Check max positions
+        if len(self.portfolio['positions']) >= max_positions:
+            return False, "Maximum positions reached"
+        
+        # Calculate position size with risk management
+        atr_value = signal.get('atr', current_price * 0.01)
+        stop_distance = abs(signal['entry'] - signal['stop_loss'])
+        
+        if stop_distance == 0:
+            return False, "Invalid stop loss"
+        
+        risk_amount = self.portfolio['balance'] * risk_per_trade / 100
+        position_size = risk_amount / stop_distance
+        
+        # Adjust for lot size
+        position_size = min(position_size, asset_info['lot_size'] * 3)
+        
+        trade_value = signal['entry'] * position_size
+        
+        # Check margin
+        if trade_value > self.portfolio['balance'] * 0.8:
+            return False, "Insufficient margin"
+        
+        # Create trade
+        trade_id = f"{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{random.randint(1000, 9999)}"
         
         trade = {
             'id': trade_id,
             'timestamp': datetime.now(),
-            'asset': signal['asset'],
-            'asset_name': asset_name,
+            'asset': symbol,
+            'asset_name': signal['asset_name'],
             'type': signal['type'],
             'entry_price': signal['entry'],
-            'size': signal['size'],
+            'size': position_size,
             'stop_loss': signal['stop_loss'],
             'take_profit': signal['take_profit'],
+            'current_price': current_price,
             'status': 'OPEN',
-            'pnl': 0.00,
-            'max_pnl': 0.00,
-            'min_pnl': 0.00,
-            'reason': signal['reason'],
-            'conditions': signal['conditions'],
-            'confidence': signal['confidence']
+            'pnl': 0.0,
+            'pnl_percent': 0.0,
+            'strategy': signal.get('strategy', 'Unknown'),
+            'reason': signal.get('reason', ''),
+            'confidence': signal.get('confidence', 0.5)
         }
         
+        # Update portfolio
         self.portfolio['positions'][trade_id] = trade
-        self.portfolio['balance'] -= trade_value * 0.001
+        self.traded_symbols.add(symbol)
         
         # Log trade
         log_entry = {
             'timestamp': datetime.now(),
             'action': 'OPEN',
             'trade_id': trade_id,
-            'asset': asset_name,
+            'asset': signal['asset_name'],
+            'symbol': symbol,
             'type': signal['type'],
             'entry_price': signal['entry'],
-            'size': signal['size'],
+            'size': position_size,
             'stop_loss': signal['stop_loss'],
             'take_profit': signal['take_profit'],
-            'reason': signal['reason'],
-            'confidence': signal['confidence']
+            'strategy': signal.get('strategy', 'Unknown'),
+            'reason': signal.get('reason', ''),
+            'confidence': signal.get('confidence', 0.5)
         }
+        
         st.session_state.trade_log.append(log_entry)
         
         return True, trade_id
     
-    def close_position(self, trade_id, exit_price, reason="Exit Condition"):
+    def update_positions(self, market_prices):
+        """Update all positions with current prices"""
+        total_pnl = 0
+        positions_closed = []
+        
+        for trade_id, position in list(self.portfolio['positions'].items()):
+            if position['status'] == 'OPEN':
+                symbol = position['asset']
+                current_price = market_prices.get(symbol)
+                
+                if current_price:
+                    # Calculate P&L
+                    if position['type'] == 'BUY':
+                        pnl = (current_price - position['entry_price']) * position['size']
+                    else:  # SELL
+                        pnl = (position['entry_price'] - current_price) * position['size']
+                    
+                    pnl_percent = (pnl / (position['entry_price'] * position['size'])) * 100
+                    
+                    position['current_price'] = current_price
+                    position['pnl'] = pnl
+                    position['pnl_percent'] = pnl_percent
+                    
+                    total_pnl += pnl
+                    
+                    # Check exit conditions
+                    exit_reason = None
+                    
+                    # Stop Loss
+                    if (position['type'] == 'BUY' and current_price <= position['stop_loss']) or \
+                       (position['type'] == 'SELL' and current_price >= position['stop_loss']):
+                        exit_reason = "Stop Loss Hit"
+                    
+                    # Take Profit
+                    elif (position['type'] == 'BUY' and current_price >= position['take_profit']) or \
+                         (position['type'] == 'SELL' and current_price <= position['take_profit']):
+                        exit_reason = "Take Profit Hit"
+                    
+                    if exit_reason:
+                        self.close_position(trade_id, current_price, exit_reason)
+                        positions_closed.append(trade_id)
+        
+        # Update portfolio P&L
+        self.portfolio['total_pnl'] += total_pnl
+        self.portfolio['daily_pnl'] += total_pnl
+        
+        # Update equity curve
+        current_equity = self.portfolio['balance'] + total_pnl
+        self.portfolio['equity_curve'].append(current_equity)
+        
+        # Update win/loss stats
+        for trade_id in positions_closed:
+            position = self.portfolio['positions'].get(trade_id)
+            if position:
+                if position['pnl'] > 0:
+                    self.portfolio['winning_trades'] += 1
+                else:
+                    self.portfolio['losing_trades'] += 1
+        
+        # Calculate drawdown
+        if self.portfolio['equity_curve']:
+            current_peak = max(self.portfolio['equity_curve'])
+            current_value = self.portfolio['equity_curve'][-1]
+            drawdown = ((current_peak - current_value) / current_peak) * 100
+            self.portfolio['max_drawdown'] = max(self.portfolio['max_drawdown'], drawdown)
+        
+        return total_pnl
+    
+    def close_position(self, trade_id, exit_price, reason="Manual Close"):
+        """Close a position"""
         if trade_id in self.portfolio['positions']:
             position = self.portfolio['positions'][trade_id]
             
+            # Calculate final P&L
             if position['type'] == 'BUY':
                 final_pnl = (exit_price - position['entry_price']) * position['size']
             else:
                 final_pnl = (position['entry_price'] - exit_price) * position['size']
             
-            trade_value = position['entry_price'] * position['size']
-            self.portfolio['balance'] += trade_value + final_pnl
+            final_pnl_percent = (final_pnl / (position['entry_price'] * position['size'])) * 100
+            
+            # Update portfolio balance
+            self.portfolio['balance'] += final_pnl
             
             # Log closure
             log_entry = {
@@ -737,705 +1146,479 @@ class PaperTrading:
                 'action': 'CLOSE',
                 'trade_id': trade_id,
                 'asset': position['asset_name'],
+                'symbol': position['asset'],
                 'type': position['type'],
                 'exit_price': exit_price,
                 'size': position['size'],
                 'pnl': final_pnl,
+                'pnl_percent': final_pnl_percent,
                 'reason': reason,
-                'roi': (final_pnl / (position['entry_price'] * position['size'])) * 100
+                'holding_time': (datetime.now() - position['timestamp']).total_seconds() / 60
             }
+            
             st.session_state.trade_log.append(log_entry)
             
+            # Remove from positions
             del self.portfolio['positions'][trade_id]
+            self.traded_symbols.discard(position['asset'])
+            
             return True
         
         return False
 
-# Backtesting Engine
-class Backtester:
-    def __init__(self, initial_capital=100000):
-        self.initial_capital = initial_capital
+# Auto-refresh logic
+def auto_refresh_data():
+    """Auto-refresh market data and signals"""
+    if st.session_state.auto_refresh:
+        current_time = datetime.now()
+        last_update = st.session_state.last_update
         
-    def run_backtest(self, df, asset_info, smc_algo):
-        results = {
-            'total_trades': 0,
-            'winning_trades': 0,
-            'losing_trades': 0,
-            'total_pnl': 0,
-            'max_drawdown': 0,
-            'win_rate': 0,
-            'profit_factor': 0,
-            'sharpe_ratio': 0,
-            'trades': []
-        }
-        
-        capital = self.initial_capital
-        peak_capital = capital
-        returns = []
-        
-        for i in range(50, len(df)-10):
-            current_data = df.iloc[:i+1].copy()
-            current_data = smc_algo.analyze_market_structure(current_data)
-            current_data = smc_algo.identify_fvgs(current_data)
-            current_data = smc_algo.identify_orderblocks(current_data)
-            
-            signals = smc_algo.generate_signals(current_data, asset_info)
-            
-            if signals and i < len(df) - 10:
-                signal = signals[0]
-                entry_price = signal['entry']
-                exit_index = min(i + 15, len(df) - 1)
-                
-                if signal['type'] == 'BUY':
-                    exit_price = df['Close'].iloc[exit_index]
-                    pnl = (exit_price - entry_price) * signal['size']
-                else:
-                    exit_price = df['Close'].iloc[exit_index]
-                    pnl = (entry_price - exit_price) * signal['size']
-                
-                capital += pnl
-                results['total_pnl'] += pnl
-                results['total_trades'] += 1
-                
-                if pnl > 0:
-                    results['winning_trades'] += 1
-                else:
-                    results['losing_trades'] += 1
-                
-                peak_capital = max(peak_capital, capital)
-                drawdown = (peak_capital - capital) / peak_capital
-                results['max_drawdown'] = max(results['max_drawdown'], drawdown)
-                
-                returns.append(pnl / capital if capital > 0 else 0)
-                
-                results['trades'].append({
-                    'entry_time': df.index[i],
-                    'exit_time': df.index[exit_index],
-                    'type': signal['type'],
-                    'entry_price': entry_price,
-                    'exit_price': exit_price,
-                    'pnl': pnl,
-                    'size': signal['size'],
-                    'roi': (pnl / (entry_price * signal['size'])) * 100
-                })
-        
-        if results['total_trades'] > 0:
-            results['win_rate'] = results['winning_trades'] / results['total_trades'] * 100
-            total_wins = sum(t['pnl'] for t in results['trades'] if t['pnl'] > 0)
-            total_losses = abs(sum(t['pnl'] for t in results['trades'] if t['pnl'] < 0))
-            
-            if total_losses > 0:
-                results['profit_factor'] = total_wins / total_losses
-            
-            if len(returns) > 1:
-                returns_array = np.array(returns)
-                if returns_array.std() > 0:
-                    results['sharpe_ratio'] = (returns_array.mean() / returns_array.std()) * np.sqrt(252)
-        
-        results['max_drawdown'] *= 100
-        results['final_capital'] = capital
-        
-        return results
+        if (current_time - last_update).seconds >= st.session_state.refresh_interval:
+            st.session_state.last_update = current_time
+            st.rerun()
 
-# Multi-Asset Scanner
-def scan_all_assets(categories, min_confidence, max_signals):
-    all_signals = []
-    smc_algo = SMCAlgorithm(fvg_lookback=fvg_period, swing_period=swing_period)
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    total_assets = sum(len(ASSET_CONFIG[cat]) for cat in categories)
-    current_asset = 0
-    
-    for category in categories:
-        for asset_name, asset_info in ASSET_CONFIG[category].items():
-            current_asset += 1
-            progress = current_asset / total_assets
-            progress_bar.progress(progress)
-            status_text.text(f"Scanning {asset_name}...")
-            
-            try:
-                df = fetch_market_data(asset_info['symbol'], timeframe)
-                if not df.empty:
-                    df = smc_algo.analyze_market_structure(df)
-                    df = smc_algo.identify_fvgs(df)
-                    df = smc_algo.identify_orderblocks(df)
-                    
-                    signals = smc_algo.generate_signals(df, asset_info)
-                    
-                    for signal in signals:
-                        if signal['confidence'] * 100 >= min_confidence:
-                            signal['category'] = category
-                            signal['asset_name'] = asset_name
-                            all_signals.append(signal)
-                            
-                            if len([s for s in all_signals if s['category'] == category]) >= max_signals:
-                                break
-            except:
-                continue
-    
-    progress_bar.empty()
-    status_text.empty()
-    
-    # Sort by confidence and category
-    all_signals = sorted(all_signals, key=lambda x: (x['category'], -x['confidence']))
-    
-    return all_signals
-
-# Main Application
+# Main Dashboard
 def main():
-    smc_algo = SMCAlgorithm(fvg_lookback=fvg_period, swing_period=swing_period)
-    backtester = Backtester(initial_capital=100000)
-    paper_trader = PaperTrading()
+    # Initialize trading engine
+    trading_engine = TradingEngine()
+    smc_algo = AdvancedSMCAlgorithm(strategy=selected_strategy)
     
-    # Dashboard Metrics
+    # Display Dashboard Metrics
+    st.markdown('<div class="metric-grid">', unsafe_allow_html=True)
+    
     col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
-        st.markdown('<div class="metric-card"><div class="metric-title">ACCOUNT BALANCE</div><div class="metric-value">${:,.2f}</div></div>'.format(
-            st.session_state.paper_portfolio['balance']
-        ), unsafe_allow_html=True)
+        balance = st.session_state.paper_portfolio['balance']
+        total_pnl = st.session_state.paper_portfolio['total_pnl']
+        change_color = "change-positive" if total_pnl >= 0 else "change-negative"
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-title">ACCOUNT BALANCE</div>
+            <div class="metric-value">${balance:,.2f}</div>
+            <div class="metric-change {change_color}">${total_pnl:+,.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col2:
-        st.markdown('<div class="metric-card"><div class="metric-title">TOTAL P&L</div><div class="metric-value profit-positive">${:,.2f}</div></div>'.format(
-            st.session_state.paper_portfolio['pnl']
-        ), unsafe_allow_html=True)
+        daily_pnl = st.session_state.paper_portfolio['daily_pnl']
+        change_color = "change-positive" if daily_pnl >= 0 else "change-negative"
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-title">DAILY P&L</div>
+            <div class="metric-value">${daily_pnl:+,.2f}</div>
+            <div class="metric-change {change_color}">{daily_pnl/balance*100:+.2f}%</div>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col3:
-        open_positions = len(st.session_state.paper_portfolio['positions'])
-        st.markdown('<div class="metric-card"><div class="metric-title">OPEN POSITIONS</div><div class="metric-value">{}</div></div>'.format(
-            open_positions
-        ), unsafe_allow_html=True)
+        winning = st.session_state.paper_portfolio['winning_trades']
+        losing = st.session_state.paper_portfolio['losing_trades']
+        total = winning + losing
+        win_rate = (winning / total * 100) if total > 0 else 0
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-title">WIN RATE</div>
+            <div class="metric-value">{win_rate:.1f}%</div>
+            <div class="metric-change">{winning}W / {losing}L</div>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col4:
-        total_trades = len(st.session_state.paper_portfolio['trade_history'])
-        st.markdown('<div class="metric-card"><div class="metric-title">TOTAL TRADES</div><div class="metric-value">{}</div></div>'.format(
-            total_trades
-        ), unsafe_allow_html=True)
+        open_positions = len(st.session_state.paper_portfolio['positions'])
+        max_dd = st.session_state.paper_portfolio['max_drawdown']
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-title">OPEN POSITIONS</div>
+            <div class="metric-value">{open_positions}</div>
+            <div class="metric-change">Max DD: {max_dd:.2f}%</div>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col5:
-        if len(st.session_state.paper_portfolio['equity_curve']) > 1:
-            equity_growth = ((st.session_state.paper_portfolio['equity_curve'][-1] / 100000) - 1) * 100
-            color_class = "profit-positive" if equity_growth >= 0 else "profit-negative"
-            st.markdown(f'<div class="metric-card"><div class="metric-title">EQUITY GROWTH</div><div class="metric-value {color_class}">{equity_growth:+.2f}%</div></div>', unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="metric-card"><div class="metric-title">EQUITY GROWTH</div><div class="metric-value">0.00%</div></div>', unsafe_allow_html=True)
+        equity_growth = ((st.session_state.paper_portfolio['equity_curve'][-1] / 50000) - 1) * 100
+        change_color = "change-positive" if equity_growth >= 0 else "change-negative"
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-title">EQUITY GROWTH</div>
+            <div class="metric-value {change_color}">{equity_growth:+.2f}%</div>
+            <div class="metric-change">Since inception</div>
+        </div>
+        """, unsafe_allow_html=True)
     
-    st.markdown("---")
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Auto-refresh controls
+    st.markdown("""
+    <div class="refresh-controls">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <strong>🔄 Auto-refresh Status:</strong>
+                <span style="color: #10b981; margin-left: 10px;">ACTIVE</span>
+                <span style="color: #94a3b8; margin-left: 20px;">Interval: {st.session_state.refresh_interval}s</span>
+            </div>
+            <div>
+                <span style="color: #94a3b8;">Last update: {st.session_state.last_update.strftime('%H:%M:%S')}</span>
+            </div>
+        </div>
+    </div>
+    """.format(
+        st.session_state=st.session_state
+    ), unsafe_allow_html=True)
     
     # Main Tabs
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📈 LIVE ANALYSIS", 
-        "🔍 MULTI-ASSET SCAN", 
-        "🤖 AUTO TRADING", 
-        "📊 BACKTESTING", 
-        "📋 TRADE HISTORY"
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📈 LIVE TRADING", 
+        "🔍 SIGNAL SCANNER", 
+        "💰 PORTFOLIO", 
+        "📊 TRADE HISTORY"
     ])
     
-    if mode == "Multi-Asset Scan":
-        with tab2:
-            st.subheader("Multi-Asset Scanner")
-            
-            if st.button("🚀 Start Scan", type="primary"):
-                with st.spinner("Scanning all assets..."):
-                    all_signals = scan_all_assets(scan_categories, min_confidence, max_signals)
-                
-                if all_signals:
-                    st.success(f"🎯 Found {len(all_signals)} trading signals across {len(scan_categories)} categories")
-                    
-                    # Group by category
-                    for category in scan_categories:
-                        category_signals = [s for s in all_signals if s['category'] == category]
-                        
-                        if category_signals:
-                            st.markdown(f"### {category}")
-                            
-                            for signal in category_signals[:max_signals]:
-                                signal_class = "signal-buy" if signal['type'] == 'BUY' else "signal-sell"
-                                confidence_color = "#10b981" if signal['confidence'] > 0.8 else "#f59e0b" if signal['confidence'] > 0.7 else "#ef4444"
-                                
-                                st.markdown(f"""
-                                <div class="signal-card {signal_class}">
-                                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                                        <h4 style="margin: 0; color: white;">{signal['asset_name']} - {signal['type']}</h4>
-                                        <span style="background: {confidence_color}; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.8rem;">
-                                            Confidence: {signal['confidence']*100:.0f}%
-                                        </span>
-                                    </div>
-                                    <div style="margin-top: 10px;">
-                                        <p style="margin: 2px 0; color: #94a3b8;"><strong>Entry:</strong> ${signal['entry']:.4f}</p>
-                                        <p style="margin: 2px 0; color: #94a3b8;"><strong>Stop Loss:</strong> ${signal['stop_loss']:.4f}</p>
-                                        <p style="margin: 2px 0; color: #94a3b8;"><strong>Take Profit:</strong> ${signal['take_profit']:.4f}</p>
-                                        <p style="margin: 2px 0; color: #94a3b8;"><strong>Reason:</strong> {signal['reason']}</p>
-                                        <p style="margin: 2px 0; color: #94a3b8;"><strong>Conditions:</strong> {', '.join(signal['conditions'])}</p>
-                                    </div>
-                                </div>
-                                """, unsafe_allow_html=True)
-                                
-                                # Execute button
-                                if st.button(f"Execute {signal['asset_name']} {signal['type']}", key=f"execute_{signal['asset_name']}_{signal['timestamp']}"):
-                                    success, trade_id = paper_trader.execute_trade(signal, signal['entry'], signal['asset_name'])
-                                    if success:
-                                        st.success(f"✅ Trade executed: {trade_id}")
-                                    else:
-                                        st.error("❌ Trade execution failed")
-                else:
-                    st.warning("⚠️ No signals found meeting the criteria")
+    with tab1:
+        st.subheader("Live Trading Dashboard")
         
-        # Set default tab to Scanner
-        tab_to_show = tab2
-    else:
-        # Single Asset Analysis
-        with tab1:
-            st.subheader(f"Live Analysis - {selected_asset}")
-            
-            df = fetch_market_data(asset_info['symbol'], timeframe)
-            
-            if not df.empty:
-                current_price = df['Close'].iloc[-1]
-                prev_close = df['Close'].iloc[-2] if len(df) > 1 else current_price
-                change_pct = ((current_price - prev_close) / prev_close) * 100
-                
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Current Price", f"${current_price:.4f}", f"{change_pct:+.2f}%")
-                with col2:
-                    atr_value = df['ATR'].iloc[-1] if 'ATR' in df.columns else 0
-                    st.metric("ATR", f"${atr_value:.4f}")
-                with col3:
-                    rsi_value = df['RSI'].iloc[-1] if 'RSI' in df.columns else 50
-                    st.metric("RSI", f"{rsi_value:.1f}")
-                with col4:
-                    volume = df['Volume'].iloc[-1] if 'Volume' in df.columns else 0
-                    st.metric("Volume", f"{volume:,.0f}")
-                
-                # Price Chart
-                fig = make_subplots(
-                    rows=3, cols=1,
-                    shared_xaxes=True,
-                    vertical_spacing=0.05,
-                    row_heights=[0.6, 0.2, 0.2],
-                    subplot_titles=(f"{selected_asset} Price Chart", "RSI", "Volume")
-                )
-                
-                # Candlestick
-                fig.add_trace(
-                    go.Candlestick(
-                        x=df.index[-100:],
-                        open=df['Open'].tail(100),
-                        high=df['High'].tail(100),
-                        low=df['Low'].tail(100),
-                        close=df['Close'].tail(100),
-                        name="Price"
-                    ),
-                    row=1, col=1
-                )
-                
-                # Moving Averages
-                if 'MA9' in df.columns:
-                    fig.add_trace(
-                        go.Scatter(x=df.index[-100:], y=df['MA9'].tail(100), 
-                                 name="MA9", line=dict(color='orange', width=1)),
-                        row=1, col=1
-                    )
-                
-                if 'MA21' in df.columns:
-                    fig.add_trace(
-                        go.Scatter(x=df.index[-100:], y=df['MA21'].tail(100), 
-                                 name="MA21", line=dict(color='blue', width=1)),
-                        row=1, col=1
-                    )
-                
-                # RSI
-                if 'RSI' in df.columns:
-                    fig.add_trace(
-                        go.Scatter(x=df.index[-100:], y=df['RSI'].tail(100), 
-                                 name="RSI", line=dict(color='purple', width=1)),
-                        row=2, col=1
-                    )
-                    fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-                    fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-                
-                # Volume
-                if 'Volume' in df.columns:
-                    colors = ['green' if df['Close'].iloc[i] >= df['Open'].iloc[i] 
-                            else 'red' for i in range(len(df)-100, len(df))]
-                    fig.add_trace(
-                        go.Bar(x=df.index[-100:], y=df['Volume'].tail(100), 
-                              name="Volume", marker_color=colors),
-                        row=3, col=1
-                    )
-                
-                fig.update_layout(
-                    height=800,
-                    showlegend=True,
-                    xaxis_rangeslider_visible=False,
-                    template="plotly_dark"
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Market Structure Analysis
-                df_analyzed = smc_algo.analyze_market_structure(df)
-                df_analyzed = smc_algo.identify_fvgs(df_analyzed)
-                df_analyzed = smc_algo.identify_orderblocks(df_analyzed)
-                
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.markdown("### Market Structure")
-                    structure = df_analyzed['Market_Structure'].iloc[-1]
-                    if structure == 'Uptrend':
-                        st.success(f"📈 {structure}")
-                    elif structure == 'Downtrend':
-                        st.error(f"📉 {structure}")
-                    else:
-                        st.info(f"⚪ {structure}")
-                
-                with col2:
-                    st.markdown("### Active FVGs")
-                    fvg_bullish = df_analyzed[~pd.isna(df_analyzed['FVG_Bullish'])]
-                    fvg_bearish = df_analyzed[~pd.isna(df_analyzed['FVG_Bearish'])]
-                    
-                    if not fvg_bullish.empty:
-                        for idx in fvg_bullish.index[-3:]:
-                            price = fvg_bullish.loc[idx, 'FVG_Bullish']
-                            width = fvg_bullish.loc[idx, 'FVG_Width']
-                            st.write(f"**Bullish:** ${price:.4f} (Width: ${width:.4f})")
-                    
-                    if not fvg_bearish.empty:
-                        for idx in fvg_bearish.index[-3:]:
-                            price = fvg_bearish.loc[idx, 'FVG_Bearish']
-                            width = fvg_bearish.loc[idx, 'FVG_Width']
-                            st.write(f"**Bearish:** ${price:.4f} (Width: ${width:.4f})")
-                
-                with col3:
-                    st.markdown("### Order Blocks")
-                    ob_bullish = df_analyzed[~pd.isna(df_analyzed['OB_Bullish'])]
-                    ob_bearish = df_analyzed[~pd.isna(df_analyzed['OB_Bearish'])]
-                    
-                    if not ob_bullish.empty:
-                        for idx in ob_bullish.index[-3:]:
-                            price = ob_bullish.loc[idx, 'OB_Bullish']
-                            st.write(f"**Bullish OB:** ${price:.4f}")
-                    
-                    if not ob_bearish.empty:
-                        for idx in ob_bearish.index[-3:]:
-                            price = ob_bearish.loc[idx, 'OB_Bearish']
-                            st.write(f"**Bearish OB:** ${price:.4f}")
+        # Fetch market data
+        with st.spinner(f"📡 Fetching {selected_asset} data..."):
+            df = fetch_intraday_data(asset_info['symbol'], timeframe)
         
-        with tab3:
-            st.subheader("Automated Trading Signals")
+        if not df.empty:
+            # Display price info
+            current_price = df['close'].iloc[-1]
+            prev_close = df['close'].iloc[-2] if len(df) > 1 else current_price
+            change_pct = ((current_price - prev_close) / prev_close) * 100
             
-            if 'df_analyzed' not in locals():
-                df = fetch_market_data(asset_info['symbol'], timeframe)
-                df_analyzed = smc_algo.analyze_market_structure(df)
-                df_analyzed = smc_algo.identify_fvgs(df_analyzed)
-                df_analyzed = smc_algo.identify_orderblocks(df_analyzed)
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Current Price", f"${current_price:.4f}", f"{change_pct:+.2f}%")
+            with col2:
+                atr_value = df['atr'].iloc[-1] if 'atr' in df.columns else 0
+                st.metric("ATR", f"${atr_value:.4f}")
+            with col3:
+                rsi_value = df['rsi'].iloc[-1] if 'rsi' in df.columns else 50
+                st.metric("RSI", f"{rsi_value:.1f}")
+            with col4:
+                volume = df['volume'].iloc[-1] if 'volume' in df.columns else 0
+                st.metric("Volume", f"{volume:,.0f}")
             
-            signals = smc_algo.generate_signals(df_analyzed, asset_info)
+            # Generate signals
+            df_analyzed = smc_algo.analyze_market_structure(df)
+            df_analyzed = smc_algo.identify_fvgs(df_analyzed)
+            df_analyzed = smc_algo.identify_orderblocks(df_analyzed)
+            
+            signals = smc_algo.generate_smc_signals(df_analyzed, asset_info)
             
             if signals:
-                st.success(f"🎯 {len(signals)} trading signals generated")
+                st.success(f"🎯 Found {len(signals)} trading signals")
                 
-                for i, signal in enumerate(signals):
-                    signal_class = "signal-buy" if signal['type'] == 'BUY' else "signal-sell"
+                # Display signals
+                st.markdown('<div class="signal-container">', unsafe_allow_html=True)
+                
+                for i, signal in enumerate(signals[:3]):  # Show top 3 signals
+                    signal_type_class = "buy" if signal['type'] == 'BUY' else "sell"
                     confidence_color = "#10b981" if signal['confidence'] > 0.8 else "#f59e0b" if signal['confidence'] > 0.7 else "#ef4444"
                     
                     st.markdown(f"""
-                    <div class="signal-card {signal_class}">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <h3 style="margin: 0; color: white;">Signal #{i+1}: {signal['type']}</h3>
-                            <span style="background: {confidence_color}; color: white; padding: 4px 12px; border-radius: 15px; font-weight: bold;">
-                                Confidence: {signal['confidence']*100:.0f}%
-                            </span>
+                    <div class="signal-card {signal_type_class}">
+                        <div class="signal-header">
+                            <div class="signal-title">{signal['asset_name']} - {signal['type']}</div>
+                            <div class="confidence-badge" style="background: {confidence_color};">{signal['confidence']*100:.0f}%</div>
                         </div>
-                        <div style="margin-top: 15px;">
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                                <div>
-                                    <p style="margin: 5px 0; color: #94a3b8;"><strong>Entry Price:</strong></p>
-                                    <p style="margin: 5px 0; font-size: 1.2rem; color: white;">${signal['entry']:.4f}</p>
-                                </div>
-                                <div>
-                                    <p style="margin: 5px 0; color: #94a3b8;"><strong>Position Size:</strong></p>
-                                    <p style="margin: 5px 0; font-size: 1.2rem; color: white;">{signal['size']:.4f}</p>
-                                </div>
-                                <div>
-                                    <p style="margin: 5px 0; color: #94a3b8;"><strong>Stop Loss:</strong></p>
-                                    <p style="margin: 5px 0; font-size: 1.1rem; color: #ef4444;">${signal['stop_loss']:.4f}</p>
-                                </div>
-                                <div>
-                                    <p style="margin: 5px 0; color: #94a3b8;"><strong>Take Profit:</strong></p>
-                                    <p style="margin: 5px 0; font-size: 1.1rem; color: #10b981;">${signal['take_profit']:.4f}</p>
-                                </div>
+                        <div class="signal-grid">
+                            <div class="signal-item">
+                                <div class="signal-label">Entry Price</div>
+                                <div class="signal-value">${signal['entry']:.4f}</div>
                             </div>
-                            <div style="margin-top: 15px;">
-                                <p style="margin: 5px 0; color: #94a3b8;"><strong>Reason:</strong> {signal['reason']}</p>
-                                <p style="margin: 5px 0; color: #94a3b8;"><strong>Conditions Met:</strong> {', '.join(signal['conditions'])}</p>
-                                <p style="margin: 5px 0; color: #94a3b8;"><strong>Sector:</strong> {signal['sector']}</p>
+                            <div class="signal-item">
+                                <div class="signal-label">Position Size</div>
+                                <div class="signal-value">{signal['size']:.4f}</div>
                             </div>
+                            <div class="signal-item">
+                                <div class="signal-label">Stop Loss</div>
+                                <div class="signal-value" style="color: #ef4444;">${signal['stop_loss']:.4f}</div>
+                            </div>
+                            <div class="signal-item">
+                                <div class="signal-label">Take Profit</div>
+                                <div class="signal-value" style="color: #10b981;">${signal['take_profit']:.4f}</div>
+                            </div>
+                        </div>
+                        <div style="margin-top: 10px;">
+                            <div style="color: #94a3b8; font-size: 0.9rem;"><strong>Strategy:</strong> {signal.get('strategy', 'SMC')}</div>
+                            <div style="color: #94a3b8; font-size: 0.9rem;"><strong>Reason:</strong> {signal.get('reason', '')}</div>
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
                     
-                    # Execute button for each signal
-                    col1, col2, col3 = st.columns([1, 2, 1])
-                    with col2:
-                        if st.button(f"📤 Execute {signal['type']} #{i+1}", key=f"execute_{i}", type="primary"):
-                            success, trade_id = paper_trader.execute_trade(signal, signal['entry'], selected_asset)
-                            if success:
-                                st.success(f"✅ Trade executed successfully! ID: {trade_id}")
-                                st.rerun()
-                            else:
-                                st.error("❌ Trade execution failed")
-            else:
-                st.info("📊 No trading signals generated for current market conditions")
-                
-                # Manual trade entry
-                with st.expander("Manual Trade Entry"):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        manual_type = st.selectbox("Type", ["BUY", "SELL"])
-                        manual_entry = st.number_input("Entry Price", value=float(current_price))
-                        manual_size = st.number_input("Position Size", value=1.0)
-                    with col2:
-                        manual_sl = st.number_input("Stop Loss", value=float(current_price * 0.98))
-                        manual_tp = st.number_input("Take Profit", value=float(current_price * 1.02))
-                    
-                    if st.button("Execute Manual Trade"):
-                        manual_signal = {
-                            'asset': asset_info['symbol'],
-                            'type': manual_type,
-                            'entry': manual_entry,
-                            'stop_loss': manual_sl,
-                            'take_profit': manual_tp,
-                            'size': manual_size,
-                            'confidence': 0.5,
-                            'reason': 'Manual Trade',
-                            'conditions': ['Manual Entry'],
-                            'sector': asset_info.get('sector', 'General'),
-                            'timestamp': datetime.now()
-                        }
-                        
-                        success, trade_id = paper_trader.execute_trade(manual_signal, manual_entry, selected_asset)
+                    # Execute button
+                    if st.button(f"🚀 Execute {signal['type']} #{i+1}", key=f"execute_{i}"):
+                        success, trade_id = trading_engine.execute_trade(signal, current_price)
                         if success:
-                            st.success(f"✅ Manual trade executed: {trade_id}")
+                            st.success(f"✅ Trade executed successfully! ID: {trade_id}")
+                            tm.sleep(1)
+                            st.rerun()
                         else:
-                            st.error("❌ Manual trade failed")
+                            st.error(f"❌ Trade execution failed")
+                
+                st.markdown('</div>', unsafe_allow_html=True)
+            else:
+                st.info("📊 No trading signals detected for current market conditions")
+        
+        # Quick Actions
+        st.markdown("---")
+        st.subheader("⚡ Quick Actions")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("🔄 Refresh All Data", type="primary"):
+                st.session_state.last_update = datetime.now()
+                st.rerun()
+        
+        with col2:
+            if st.button("📊 Scan All Assets"):
+                with st.spinner("Scanning all assets for opportunities..."):
+                    # Implement multi-asset scan
+                    pass
+        
+        with col3:
+            if st.button("💰 Update Positions"):
+                # Update positions with current prices
+                market_prices = {asset_info['symbol']: current_price}
+                pnl = trading_engine.update_positions(market_prices)
+                st.success(f"Positions updated! Current P&L: ${pnl:+.2f}")
     
-    with tab4:
-        st.subheader("Strategy Backtesting")
+    with tab2:
+        st.subheader("Multi-Asset Signal Scanner")
         
         col1, col2 = st.columns(2)
         with col1:
-            backtest_days = st.slider("Backtest Period (days)", 30, 365, 90)
+            scan_categories = st.multiselect(
+                "Categories to Scan",
+                list(ASSET_CONFIG.keys()),
+                default=["Cryptocurrencies", "Forex", "Tech Stocks"]
+            )
         with col2:
-            initial_capital = st.number_input("Initial Capital", value=100000.0)
+            min_confidence = st.slider("Minimum Confidence", 70, 95, 75)
         
-        if st.button("🚀 Run Backtest", type="primary"):
-            with st.spinner(f"Running backtest on {selected_asset}..."):
-                # Fetch historical data
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=backtest_days)
+        if st.button("🚀 Start Scan", type="primary"):
+            all_signals = []
+            
+            with st.spinner(f"🔍 Scanning {len(scan_categories)} categories..."):
+                progress_bar = st.progress(0)
                 
-                try:
-                    df_backtest = yf.download(asset_info['symbol'], start=start_date, end=end_date, interval='1d')
-                    if not df_backtest.empty:
-                        df_backtest = add_technical_indicators(df_backtest)
+                for cat_idx, category in enumerate(scan_categories):
+                    st.write(f"**{category}**")
+                    
+                    for asset_name, info in ASSET_CONFIG[category].items():
+                        try:
+                            df = fetch_intraday_data(info['symbol'], timeframe)
+                            if not df.empty and len(df) > 30:
+                                df = smc_algo.analyze_market_structure(df)
+                                df = smc_algo.identify_fvgs(df)
+                                df = smc_algo.identify_orderblocks(df)
+                                
+                                signals = smc_algo.generate_smc_signals(df, info)
+                                
+                                for signal in signals:
+                                    if signal['confidence'] * 100 >= min_confidence:
+                                        signal['category'] = category
+                                        signal['asset_display'] = asset_name
+                                        all_signals.append(signal)
+                        except:
+                            continue
+                    
+                    progress_bar.progress((cat_idx + 1) / len(scan_categories))
+                
+                progress_bar.empty()
+            
+            if all_signals:
+                st.success(f"🎯 Found {len(all_signals)} high-confidence signals")
+                
+                # Group by category
+                for category in scan_categories:
+                    category_signals = [s for s in all_signals if s['category'] == category]
+                    
+                    if category_signals:
+                        st.markdown(f"### {category}")
                         
-                        backtester = Backtester(initial_capital=initial_capital)
-                        results = backtester.run_backtest(df_backtest, asset_info, smc_algo)
-                        st.session_state.backtest_results = results
-                        
-                        st.success("✅ Backtest completed!")
-                    else:
-                        st.error("❌ Could not fetch historical data")
-                except Exception as e:
-                    st.error(f"❌ Backtest error: {e}")
-        
-        if st.session_state.backtest_results:
-            results = st.session_state.backtest_results
-            
-            # Display metrics
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric("Total Trades", results['total_trades'])
-            with col2:
-                st.metric("Win Rate", f"{results['win_rate']:.1f}%")
-            with col3:
-                st.metric("Profit Factor", f"{results['profit_factor']:.2f}")
-            with col4:
-                st.metric("Max Drawdown", f"{results['max_drawdown']:.1f}%")
-            
-            col5, col6, col7 = st.columns(3)
-            with col5:
-                st.metric("Total P&L", f"${results['total_pnl']:,.2f}")
-            with col6:
-                st.metric("Final Capital", f"${results['final_capital']:,.2f}")
-            with col7:
-                st.metric("Sharpe Ratio", f"{results['sharpe_ratio']:.2f}")
-            
-            # Equity Curve
-            if results['trades']:
-                trades_df = pd.DataFrame(results['trades'])
-                trades_df['cumulative_pnl'] = trades_df['pnl'].cumsum() + initial_capital
-                
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=trades_df['exit_time'],
-                    y=trades_df['cumulative_pnl'],
-                    mode='lines',
-                    name='Equity Curve',
-                    line=dict(color='#3b82f6', width=2)
-                ))
-                
-                fig.update_layout(
-                    title="Equity Curve",
-                    xaxis_title="Date",
-                    yaxis_title="Portfolio Value ($)",
-                    template="plotly_dark",
-                    height=400
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Trade Distribution
-                fig2 = go.Figure()
-                
-                winning_trades = trades_df[trades_df['pnl'] > 0]
-                losing_trades = trades_df[trades_df['pnl'] < 0]
-                
-                fig2.add_trace(go.Bar(
-                    x=['Winning Trades', 'Losing Trades'],
-                    y=[len(winning_trades), len(losing_trades)],
-                    marker_color=['#10b981', '#ef4444'],
-                    name='Trade Count'
-                ))
-                
-                fig2.update_layout(
-                    title="Trade Distribution",
-                    xaxis_title="Trade Type",
-                    yaxis_title="Count",
-                    template="plotly_dark",
-                    height=300
-                )
-                
-                st.plotly_chart(fig2, use_container_width=True)
-                
-                # Detailed Trades
-                with st.expander("View Detailed Trades"):
-                    st.dataframe(trades_df.sort_values('exit_time', ascending=False))
+                        for signal in category_signals[:5]:  # Top 5 per category
+                            with st.expander(f"{signal['asset_display']} - {signal['type']} ({signal['confidence']*100:.0f}%)"):
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    st.write(f"**Entry:** ${signal['entry']:.4f}")
+                                    st.write(f"**Stop Loss:** ${signal['stop_loss']:.4f}")
+                                with col2:
+                                    st.write(f"**Take Profit:** ${signal['take_profit']:.4f}")
+                                    st.write(f"**Size:** {signal['size']:.4f}")
+                                
+                                st.write(f"**Reason:** {signal.get('reason', '')}")
+                                
+                                if st.button(f"Execute {signal['type']}", key=f"scan_exec_{signal['asset']}_{signal['timestamp']}"):
+                                    success, trade_id = trading_engine.execute_trade(signal, signal['entry'])
+                                    if success:
+                                        st.success(f"Trade executed: {trade_id}")
+                                    else:
+                                        st.error("Execution failed")
+            else:
+                st.warning("No signals found meeting the criteria")
     
-    with tab5:
-        st.subheader("Trade History Log")
+    with tab3:
+        st.subheader("Portfolio Overview")
+        
+        # Open Positions
+        st.markdown("### 📊 Open Positions")
+        positions = st.session_state.paper_portfolio['positions']
+        
+        if positions:
+            for trade_id, position in positions.items():
+                pnl = position['pnl']
+                pnl_percent = position.get('pnl_percent', 0)
+                pnl_color = "pnl-positive" if pnl >= 0 else "pnl-negative"
+                
+                st.markdown(f"""
+                <div class="trade-entry">
+                    <div class="trade-header">
+                        <div class="trade-asset">{position['asset_name']} - {position['type']}</div>
+                        <div class="trade-pnl {pnl_color}">${pnl:+,.2f} ({pnl_percent:+.2f}%)</div>
+                    </div>
+                    <div class="trade-details">
+                        <div><strong>Entry:</strong> ${position['entry_price']:.4f}</div>
+                        <div><strong>Current:</strong> ${position.get('current_price', position['entry_price']):.4f}</div>
+                        <div><strong>Stop Loss:</strong> ${position['stop_loss']:.4f}</div>
+                        <div><strong>Take Profit:</strong> ${position['take_profit']:.4f}</div>
+                        <div><strong>Size:</strong> {position['size']:.4f}</div>
+                        <div><strong>Strategy:</strong> {position.get('strategy', 'Unknown')}</div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Close button
+                if st.button(f"Close Position", key=f"close_{trade_id}"):
+                    trading_engine.close_position(trade_id, position.get('current_price', position['entry_price']), "Manual Close")
+                    st.success(f"Position {trade_id} closed")
+                    tm.sleep(1)
+                    st.rerun()
+        else:
+            st.info("No open positions")
+        
+        # Portfolio Stats
+        st.markdown("---")
+        st.subheader("📈 Portfolio Statistics")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            win_rate = st.session_state.paper_portfolio['winning_trades']
+            loss_rate = st.session_state.paper_portfolio['losing_trades']
+            total = win_rate + loss_rate
+            rate = (win_rate / total * 100) if total > 0 else 0
+            st.metric("Win Rate", f"{rate:.1f}%")
+        
+        with col2:
+            avg_win = 0  # Calculate from trade history
+            st.metric("Avg Win", f"${avg_win:,.2f}")
+        
+        with col3:
+            avg_loss = 0  # Calculate from trade history
+            st.metric("Avg Loss", f"${avg_loss:,.2f}")
+        
+        with col4:
+            profit_factor = 0  # Calculate from trade history
+            st.metric("Profit Factor", f"{profit_factor:.2f}")
+    
+    with tab4:
+        st.subheader("Trade History & Analytics")
         
         if st.session_state.trade_log:
-            # Filter options
+            # Filters
             col1, col2, col3 = st.columns(3)
             with col1:
-                filter_asset = st.selectbox("Filter by Asset", 
-                                          ["All"] + list(set([log['asset'] for log in st.session_state.trade_log])))
+                filter_asset = st.selectbox("Filter Asset", 
+                                          ["All"] + sorted(set([log.get('asset', '') for log in st.session_state.trade_log if log.get('asset')])))
             with col2:
-                filter_type = st.selectbox("Filter by Type", 
-                                         ["All", "BUY", "SELL"])
+                filter_action = st.selectbox("Filter Action", ["All", "OPEN", "CLOSE"])
             with col3:
-                filter_action = st.selectbox("Filter by Action", 
-                                           ["All", "OPEN", "CLOSE"])
+                filter_type = st.selectbox("Filter Type", ["All", "BUY", "SELL"])
             
             # Apply filters
             filtered_logs = st.session_state.trade_log
             
             if filter_asset != "All":
-                filtered_logs = [log for log in filtered_logs if log['asset'] == filter_asset]
-            
-            if filter_type != "All":
-                filtered_logs = [log for log in filtered_logs if log.get('type') == filter_type]
+                filtered_logs = [log for log in filtered_logs if log.get('asset') == filter_asset]
             
             if filter_action != "All":
                 filtered_logs = [log for log in filtered_logs if log['action'] == filter_action]
             
+            if filter_type != "All":
+                filtered_logs = [log for log in filtered_logs if log.get('type') == filter_type]
+            
             # Display logs
-            for log in reversed(filtered_logs[-50:]):  # Show last 50 logs
-                timestamp_str = log['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
+            st.markdown('<div class="trade-log">', unsafe_allow_html=True)
+            
+            for log in reversed(filtered_logs[-50:]):  # Last 50 trades
+                timestamp = log['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
+                asset = log.get('asset', 'Unknown')
+                action = log['action']
+                trade_type = log.get('type', '')
                 
-                if log['action'] == 'OPEN':
-                    bg_color = "#1e3a8a"
-                    icon = "📈" if log.get('type') == 'BUY' else "📉"
+                if action == 'OPEN':
+                    bg_color = "rgba(59, 130, 246, 0.1)"
+                    icon = "📈" if trade_type == 'BUY' else "📉"
                 else:
-                    bg_color = "#0f172a"
+                    bg_color = "rgba(16, 185, 129, 0.1)" if log.get('pnl', 0) >= 0 else "rgba(239, 68, 68, 0.1)"
                     icon = "✅" if log.get('pnl', 0) >= 0 else "❌"
                 
                 st.markdown(f"""
-                <div style="background: {bg_color}; padding: 12px; border-radius: 8px; margin: 8px 0; border-left: 4px solid #3b82f6;">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div style="background: {bg_color}; padding: 12px; border-radius: 8px; margin-bottom: 10px; border-left: 4px solid #3b82f6;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                         <div>
-                            <strong>{icon} {log['action']} - {log['asset']}</strong>
-                            <span style="color: #94a3b8; margin-left: 10px;">{timestamp_str}</span>
+                            <strong>{icon} {action} - {asset}</strong>
+                            <span style="color: #94a3b8; margin-left: 10px;">{timestamp}</span>
                         </div>
                         <div>
-                            {f"<span style='color: #10b981; font-weight: bold;'>+${log['pnl']:,.2f}</span>" if log['action'] == 'CLOSE' and log.get('pnl') else ""}
-                            {f"<span style='color: #f59e0b; font-size: 0.9rem;'>(Confidence: {log.get('confidence', 0)*100:.0f}%)</span>" if log.get('confidence') else ""}
+                            {f"<span style='color: #10b981; font-weight: bold;'>+${log.get('pnl', 0):.2f}</span>" if action == 'CLOSE' and log.get('pnl', 0) >= 0 else ""}
+                            {f"<span style='color: #ef4444; font-weight: bold;'>-${abs(log.get('pnl', 0)):.2f}</span>" if action == 'CLOSE' and log.get('pnl', 0) < 0 else ""}
                         </div>
                     </div>
-                    <div style="margin-top: 8px; color: #94a3b8; font-size: 0.9rem;">
-                        {f"<strong>Type:</strong> {log.get('type', 'N/A')} | " if log.get('type') else ""}
+                    <div style="color: #94a3b8; font-size: 0.9rem;">
+                        {f"<strong>Type:</strong> {trade_type} | " if trade_type else ""}
                         {f"<strong>Entry:</strong> ${log.get('entry_price', 0):.4f} | " if log.get('entry_price') else ""}
                         {f"<strong>Exit:</strong> ${log.get('exit_price', 0):.4f} | " if log.get('exit_price') else ""}
                         {f"<strong>Size:</strong> {log.get('size', 0):.4f} | " if log.get('size') else ""}
-                        {f"<strong>Stop Loss:</strong> ${log.get('stop_loss', 0):.4f} | " if log.get('stop_loss') else ""}
-                        {f"<strong>Take Profit:</strong> ${log.get('take_profit', 0):.4f}" if log.get('take_profit') else ""}
+                        {f"<strong>Strategy:</strong> {log.get('strategy', 'Unknown')}" if log.get('strategy') else ""}
                     </div>
-                    {f"<div style='margin-top: 5px; color: #d1d5db; font-size: 0.85rem;'><strong>Reason:</strong> {log.get('reason', 'N/A')}</div>" if log.get('reason') else ""}
-                    {f"<div style='margin-top: 5px; color: #d1d5db; font-size: 0.85rem;'><strong>ROI:</strong> {log.get('roi', 0):.2f}%</div>" if log.get('roi') else ""}
+                    {f"<div style='color: #d1d5db; font-size: 0.85rem; margin-top: 5px;'><strong>Reason:</strong> {log.get('reason', '')}</div>" if log.get('reason') else ""}
                 </div>
                 """, unsafe_allow_html=True)
             
-            # Summary Statistics
-            st.markdown("---")
-            st.subheader("Trade Summary Statistics")
+            st.markdown('</div>', unsafe_allow_html=True)
             
-            closed_trades = [log for log in st.session_state.trade_log if log['action'] == 'CLOSE']
-            
-            if closed_trades:
-                total_pnl = sum(log.get('pnl', 0) for log in closed_trades)
-                winning_trades = [log for log in closed_trades if log.get('pnl', 0) > 0]
-                losing_trades = [log for log in closed_trades if log.get('pnl', 0) < 0]
-                
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Total Closed Trades", len(closed_trades))
-                with col2:
-                    st.metric("Winning Trades", len(winning_trades))
-                with col3:
-                    st.metric("Losing Trades", len(losing_trades))
-                with col4:
-                    win_rate = (len(winning_trades) / len(closed_trades) * 100) if closed_trades else 0
-                    st.metric("Win Rate", f"{win_rate:.1f}%")
-                
-                col5, col6 = st.columns(2)
-                with col5:
-                    avg_win = np.mean([log.get('pnl', 0) for log in winning_trades]) if winning_trades else 0
-                    st.metric("Average Win", f"${avg_win:,.2f}")
-                with col6:
-                    avg_loss = np.mean([log.get('pnl', 0) for log in losing_trades]) if losing_trades else 0
-                    st.metric("Average Loss", f"${avg_loss:,.2f}")
-                
-                # Export button
-                if st.button("📥 Export Trade History"):
-                    df_log = pd.DataFrame(st.session_state.trade_log)
-                    csv = df_log.to_csv(index=False)
-                    st.download_button(
-                        label="Download CSV",
-                        data=csv,
-                        file_name=f"trade_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                        mime="text/csv"
-                    )
-            else:
-                st.info("No closed trades yet")
+            # Export button
+            if st.button("📥 Export Trade History"):
+                df_log = pd.DataFrame(st.session_state.trade_log)
+                csv = df_log.to_csv(index=False)
+                st.download_button(
+                    label="Download CSV",
+                    data=csv,
+                    file_name=f"trade_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
         else:
             st.info("No trade history yet. Execute some trades to see them here!")
+    
+    # Auto-refresh logic
+    if st.session_state.auto_refresh:
+        auto_refresh_data()
+        
+        # Show countdown
+        current_time = datetime.now()
+        time_since_update = (current_time - st.session_state.last_update).seconds
+        time_until_refresh = max(0, st.session_state.refresh_interval - time_since_update)
+        
+        st.markdown(f"""
+        <div class="last-update">
+            ⏱️ Next auto-refresh in {time_until_refresh} seconds
+        </div>
+        """, unsafe_allow_html=True)
     
     # Footer
     st.markdown("---")
@@ -1443,7 +1626,7 @@ def main():
     <div style='text-align: center; color: #64748b; padding: 20px;'>
         <p><strong>⚠️ RISK DISCLAIMER:</strong> This is a paper trading simulation for educational purposes only.</p>
         <p>Past performance does not guarantee future results. Trading involves substantial risk of loss.</p>
-        <p style='margin-top: 10px; font-size: 0.9rem;'>RTV SMC Algo Trading Terminal v2.0 • © 2024</p>
+        <p style='margin-top: 10px; font-size: 0.9rem;'>RTV SMC Algorithmic Trading Terminal Pro v2.0 • © 2024</p>
     </div>
     """, unsafe_allow_html=True)
 
