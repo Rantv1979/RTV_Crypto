@@ -3,6 +3,6 @@ pandas==2.2.2
 numpy==1.26.4
 plotly==5.20.0
 ccxt==4.2.85
-kiteconnect==5.0.1
 requests==2.31.0
 pytz==2024.1
+yfinance>=0.2.28
